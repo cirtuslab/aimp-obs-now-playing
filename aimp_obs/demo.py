@@ -17,6 +17,15 @@ DEMO_LINES = [
     ("♪ 示例歌词第五行", "♪ 示例歌词第五句翻译"),
 ]
 
+# Enhanced LRC word timings (relative to each demo line start).
+DEMO_WORDS = [
+    [{"t": 0, "s": "♪ 示"}, {"t": 1000, "s": "例"}, {"t": 2000, "s": "歌"}, {"t": 3000, "s": "词"}, {"t": 4000, "s": "第一"}, {"t": 5200, "s": "行"}],
+    [{"t": 0, "s": "♪ 示例"}, {"t": 1400, "s": "歌词"}, {"t": 2800, "s": "第二行"}],
+    [{"t": 0, "s": "♪ 示例"}, {"t": 1400, "s": "歌词"}, {"t": 2800, "s": "第三行"}],
+    [{"t": 0, "s": "♪ 示例"}, {"t": 1400, "s": "歌词"}, {"t": 2800, "s": "第四行"}],
+    [{"t": 0, "s": "♪ 示例"}, {"t": 1400, "s": "歌词"}, {"t": 2800, "s": "第五行"}],
+]
+
 _cover_cache: bytes | None = None
 
 
@@ -53,6 +62,8 @@ def demo_snapshot() -> dict:
     idx = int(now // 8) % len(DEMO_LINES)
     cur = DEMO_LINES[idx]
     nxt = DEMO_LINES[(idx + 1) % len(DEMO_LINES)]
+    line_base_ms = idx * 8000
+    cur_words = [{"t": line_base_ms + w["t"], "s": w["s"]} for w in DEMO_WORDS[idx]]
     return {
         "connected": True,
         "state": "playing",
@@ -74,6 +85,7 @@ def demo_snapshot() -> dict:
         "repeat": False,
         "track_key": "demo",
         "lyrics_synced": True,
+        "lyrics_words": cur_words,
         "lyrics_current": "\n".join(cur),
         "lyrics_next": "\n".join(nxt),
         "lyrics_full": ["\n".join(line) for line in DEMO_LINES],

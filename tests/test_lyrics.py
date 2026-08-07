@@ -27,3 +27,41 @@ def test_multiple_timestamps_on_one_line():
     text = "[00:01.000][00:03.000]重复行\n"
     lrc = parse_lrc(text)
     assert [line.time_ms for line in lrc.lines] == [1000, 3000]
+
+
+def test_enhanced_lrc_words():
+    text = (
+        "[00:20.570]<00:20.570>初<00:20.930>め<00:21.080>て<00:21.200>の<00:21.370>ル<00:21.430>ー<00:21.620>ブ<00:21.770>ル<00:21.940>は<00:22.470>\n"
+        "[00:20.570]第一次去卢浮宫时\n"
+        "[00:22.760]<00:22.760>な<00:22.970>ん<00:23.130>て\n"
+    )
+    lrc = parse_lrc(text)
+    assert lrc.synced is True
+    # tags are stripped from the display text
+    assert lrc.lines[0].text == "初めてのルーブルは"
+    words = lrc.lines[0].words
+    assert len(words) == 9
+    assert words[0].start_ms == 20570 and words[0].text == "初"
+    assert words[1].start_ms == 20930 and words[1].text == "め"
+    assert words[-1].start_ms == 21940 and words[-1].text == "は"
+    # translation line carries no word data
+    assert lrc.lines[1].words == []
+    assert lrc.lines[1].text == "第一次去卢浮宫时"
+    # words_at returns the active line's words
+    cur = lrc.words_at(21500)
+    assert cur[0] == {"t": 20570, "s": "初"}
+    assert cur[4] == {"t": 21370, "s": "ル"}
+    # before the first line -> no words
+    assert lrc.words_at(0) == []
+
+
+def test_enhanced_lrc_single_word_not_treated_as_enhanced():
+    lrc = parse_lrc("[00:00.000]<00:00.000> 作词 : 宇多田ヒカル<00:01.000>\n")
+    assert lrc.lines[0].words == []
+    assert lrc.lines[0].text == "作词 : 宇多田ヒカル"
+
+
+def test_enhanced_lrc_offset_applies_to_words():
+    text = "[00:10.000]<00:10.000>词<00:10.500>组<00:11.000>测<00:11.500>试\n"
+    lrc = parse_lrc(text)
+    assert [w.start_ms for w in lrc.lines[0].words] == [10000, 10500, 11000, 11500]

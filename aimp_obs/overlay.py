@@ -377,6 +377,8 @@ __THEME_CSS__
     word-break: break-word;
     will-change: transform, opacity, color;
   }
+  .lyric-cur .lw, .lyric-next .lw { font-weight: 400; }
+  .lyric-cur .lw.active, .lyric-next .lw.active { font-weight: 800; color: var(--accent); }
   .lyrics-none { color: var(--dim); font-size: 0.85em; font-family: var(--lyric-font), sans-serif; }
   .lyrics-unsynced { color: var(--dim); font-size: 0.84em; line-height: 1.5; font-family: var(--lyric-font), sans-serif; }
 
@@ -508,7 +510,21 @@ __THEME_CSS__
   let lyricTimer = null;
   let pendingTop = null;
   let pendingBot = '';
+  let pendingTopWords = [];
+  let currentWords = [];
+  let activeWordIdx = -1;
+  let lastSnap = null;
   const LYR_GAP = 4;
+
+  function setContent(node, text, words) {
+    if (words && words.length >= 2) {
+      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('');
+      if (node.innerHTML !== html) node.innerHTML = html;
+    } else {
+      if (node.textContent !== text) node.textContent = text;
+    }
+    activeWordIdx = -1;
+  }
 
   function layoutLyrics() {
     const topH = topEl.offsetHeight || 22;
@@ -524,13 +540,15 @@ __THEME_CSS__
 
   // Rolling transition: the bottom line slides up into the top slot while the
   // old top line slides out, and the new next line fades in at the bottom.
-  function rollLyrics(newTop, newBot) {
+  function rollLyrics(newTop, newBot, newTopWords) {
     const oldTop = topEl.textContent;
     if (!oldTop) {
-      topEl.textContent = newTop;
+      setContent(topEl, newTop, newTopWords);
+      currentWords = newTopWords || [];
       botEl.textContent = newBot;
       pendingTop = null;
       pendingBot = '';
+      pendingTopWords = [];
       layoutLyrics();
       topEl.style.transition = 'none';
       topEl.style.opacity = '0';
@@ -541,6 +559,7 @@ __THEME_CSS__
     }
     if (lyricTimer) { clearTimeout(lyricTimer); lyricTimer = null; }
     pendingTop = newTop;
+    pendingTopWords = newTopWords || [];
     pendingBot = newBot;
     const distance = (topEl.offsetHeight || 22) + LYR_GAP;
     layoutLyrics();
@@ -559,7 +578,8 @@ __THEME_CSS__
       botEl.style.transition = 'none';
 
       // old bottom becomes the new top line
-      botEl.textContent = pendingTop;
+      setContent(botEl, pendingTop, pendingTopWords);
+      currentWords = pendingTopWords;
       botEl.style.top = '0px';
       botEl.style.transform = 'translateY(0)';
       botEl.style.opacity = '1';
@@ -584,10 +604,12 @@ __THEME_CSS__
       lyricTimer = null;
       pendingTop = null;
       pendingBot = '';
+      pendingTopWords = [];
     }, 290);
   }
 
   function render(s) {
+    lastSnap = s;
     el.panel.classList.toggle('hidden', params.get('hide') === 'stopped' && s.state !== 'playing');
     el.title.textContent = s.title || (s.connected ? '未知曲目' : '未检测到 AIMP');
     const subParts = [s.artist, s.album].filter(Boolean);
@@ -601,6 +623,7 @@ __THEME_CSS__
 
     const cur = s.lyrics_current || '';
     const nxt = s.lyrics_next || '';
+    const words = Array.isArray(s.lyrics_words) ? s.lyrics_words : [];
     el.unsynced.style.display = 'none';
     if (s.lyrics_synced) {
       topEl.style.display = cur ? '' : 'none';
@@ -623,62 +646,95 @@ __THEME_CSS__
             topEl.style.color = '';
             botEl.style.color = '';
             layoutLyrics();
-            rollLyrics(cur, nxt);
+            rollLyrics(cur, nxt, words);
           }
         } else {
-          rollLyrics(cur, nxt);
+          rollLyrics(cur, nxt, words);
         }
       } else {
-        if (topEl.textContent !== cur) topEl.textContent = cur;
+        if (topEl.textContent !== cur) setContent(topEl, cur, words);
+        currentWords = words;
         if (botEl.textContent !== nxt) botEl.textContent = nxt;
         layoutLyrics();
       }
       el.none.style.display = (!cur && !nxt) ? '' : 'none';
-    } else if (Array.isArray(s.lyrics_full) && s.lyrics_full.length) {
-      topEl.style.display = 'none';
-      botEl.style.display = 'none';
-      el.unsynced.style.display = '';
-      el.lyricsBox.style.height = 'auto';
-      const block = esc(s.lyrics_full.slice(-6).join('\n'));
-      if (el.unsynced._last !== block) {
-        el.unsynced._last = block;
-        el.unsynced.style.transition = 'none';
-        el.unsynced.style.opacity = '0';
-        void el.unsynced.offsetHeight;
-        el.unsynced.innerHTML = block;
-        el.unsynced.style.transition = 'opacity 0.35s ease';
-        el.unsynced.style.opacity = '1';
-      }
-      el.none.style.display = 'none';
     } else {
-      topEl.style.display = 'none';
-      botEl.style.display = 'none';
-      el.unsynced._last = '';
-      el.lyricsBox.style.height = 'auto';
-      el.none.style.display = '';
+      currentWords = [];
+      if (Array.isArray(s.lyrics_full) && s.lyrics_full.length) {
+        topEl.style.display = 'none';
+        botEl.style.display = 'none';
+        el.unsynced.style.display = '';
+        el.lyricsBox.style.height = 'auto';
+        const block = esc(s.lyrics_full.slice(-6).join('\n'));
+        if (el.unsynced._last !== block) {
+          el.unsynced._last = block;
+          el.unsynced.style.transition = 'none';
+          el.unsynced.style.opacity = '0';
+          void el.unsynced.offsetHeight;
+          el.unsynced.innerHTML = block;
+          el.unsynced.style.transition = 'opacity 0.35s ease';
+          el.unsynced.style.opacity = '1';
+        }
+        el.none.style.display = 'none';
+      } else {
+        topEl.style.display = 'none';
+        botEl.style.display = 'none';
+        el.unsynced._last = '';
+        el.lyricsBox.style.height = 'auto';
+        el.none.style.display = '';
+      }
     }
   }
+
+  // Word-level bolding for Enhanced LRC: highlight the word that is playing now.
+  function wordHighlightLoop() {
+    if (currentWords.length >= 2) {
+      let pos = (lastSnap && lastSnap.position_ms) || 0;
+      if (lastSnap && lastSnap.state === 'playing') {
+        pos += Date.now() - Math.round((lastSnap.updated_at || Date.now() / 1000) * 1000);
+      }
+      let idx = -1;
+      for (let i = 0; i < currentWords.length; i++) {
+        if (currentWords[i].t <= pos) idx = i;
+        else break;
+      }
+      if (idx !== activeWordIdx) {
+        activeWordIdx = idx;
+        const spans = topEl.querySelectorAll('.lw');
+        for (let i = 0; i < spans.length; i++) {
+          spans[i].classList.toggle('active', i === idx);
+        }
+      }
+    }
+    requestAnimationFrame(wordHighlightLoop);
+  }
+  requestAnimationFrame(wordHighlightLoop);
 
   // ---- demo mode: preview without AIMP ----
   function runDemo() {
     const demoLyrics = [
-      [0, '♪ 示例歌词第一行'], [12000, '♪ 示例歌词第二行'], [24000, '♪ 示例歌词第三行'],
-      [36000, '♪ 示例歌词第四行'], [48000, '♪ 示例歌词第五行'], [60000, '♪ 示例歌词第六行']
+      { t: 0, text: '♪ 示例歌词第一行', words: [{t:0,s:'♪ 示'},{t:900,s:'例'},{t:1700,s:'歌'},{t:2500,s:'词'},{t:3300,s:'第一'},{t:4500,s:'行'}] },
+      { t: 12000, text: '♪ 示例歌词第二行', words: [{t:12000,s:'♪ 示例'},{t:13200,s:'歌词'},{t:14600,s:'第二行'}] },
+      { t: 24000, text: '♪ 示例歌词第三行', words: [{t:24000,s:'♪ 示例'},{t:25200,s:'歌词'},{t:26600,s:'第三行'}] },
+      { t: 36000, text: '♪ 示例歌词第四行', words: [{t:36000,s:'♪ 示例'},{t:37200,s:'歌词'},{t:38600,s:'第四行'}] },
+      { t: 48000, text: '♪ 示例歌词第五行', words: [{t:48000,s:'♪ 示例'},{t:49200,s:'歌词'},{t:50600,s:'第五行'}] },
+      { t: 60000, text: '♪ 示例歌词第六行', words: [{t:60000,s:'♪ 示例'},{t:61200,s:'歌词'},{t:62600,s:'第六行'}] }
     ];
     const dur = 180000;
     let t = 0;
     demoTimer = setInterval(() => {
       t = (t + 1000) % dur;
-      let cur = '', nxt = '';
+      let cur = '', nxt = '', curWords = [];
       for (let i = 0; i < demoLyrics.length; i++) {
-        if (demoLyrics[i][0] <= t) cur = demoLyrics[i][1];
-        if (demoLyrics[i][0] > t) { nxt = demoLyrics[i][1]; break; }
+        if (demoLyrics[i].t <= t) { cur = demoLyrics[i].text; curWords = demoLyrics[i].words; }
+        if (demoLyrics[i].t > t) { nxt = demoLyrics[i].text; break; }
       }
       render({
         connected: true, state: 'playing', state_text: '播放中',
         title: '示例歌曲 Example Song', artist: '示例歌手', album: '示例专辑',
+        position_ms: t, updated_at: Date.now() / 1000,
         position: fmt(t), duration: fmt(dur), progress: t / dur,
-        lyrics_synced: true, lyrics_current: cur, lyrics_next: nxt,
+        lyrics_synced: true, lyrics_current: cur, lyrics_next: nxt, lyrics_words: curWords,
         cover_ts: 1
       });
     }, 1000);

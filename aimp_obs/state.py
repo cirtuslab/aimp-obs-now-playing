@@ -173,6 +173,7 @@ class StateHub:
         lyrics = self.lyrics_provider.get(filename, title, artist) if filename else None
         lyrics_current = lyrics_next = ""
         lyrics_full: list = []
+        lyrics_words: list = []
         lyrics_synced = False
         lyrics_raw = ""
         if lyrics and lyrics.has_text:
@@ -180,6 +181,7 @@ class StateHub:
             lyrics_raw = lyrics.raw
             if lyrics.synced:
                 lyrics_current, lyrics_next = lyrics.group_at(position)
+                lyrics_words = lyrics.words_at(position)
                 lyrics_full = [ln.text for ln in lyrics.lines]
             else:
                 lyrics_full = lyrics.unsynced_lines
@@ -210,6 +212,7 @@ class StateHub:
             "repeat": bool(repeated),
             "track_key": track_key,
             "lyrics_synced": lyrics_synced,
+            "lyrics_words": lyrics_words,
             "lyrics_current": lyrics_current,
             "lyrics_next": lyrics_next,
             "lyrics_full": lyrics_full,
@@ -252,6 +255,7 @@ class StateHub:
             "repeat": False,
             "track_key": "",
             "lyrics_synced": False,
+            "lyrics_words": [],
             "lyrics_current": "",
             "lyrics_next": "",
             "lyrics_full": [],

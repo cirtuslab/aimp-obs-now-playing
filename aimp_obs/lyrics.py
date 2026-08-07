@@ -9,14 +9,24 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 _TIME_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+_WORD_TIME_RE = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
 _META_RE = re.compile(r"^\[([a-zA-Z]+):(.*)\]$")
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+@dataclass
+class LyricWord:
+    """A single word in an Enhanced LRC line (absolute start time + text)."""
+
+    start_ms: int
+    text: str
 
 
 @dataclass
 class LyricLine:
     time_ms: int
     text: str
+    words: List[LyricWord] = field(default_factory=list)
 
 
 @dataclass
@@ -59,6 +69,21 @@ class Lyrics:
             nxt = ""
         return current, nxt
 
+    def words_at(self, pos_ms: int) -> List[Dict[str, object]]:
+        """Return Enhanced-LRC words of the line active at pos_ms."""
+        if not self.synced or not self.lines:
+            return []
+        times = [ln.time_ms for ln in self.lines]
+        idx = bisect.bisect_right(times, pos_ms) - 1
+        if idx < 0:
+            return []
+        group_time = times[idx]
+        start = idx
+        while start > 0 and times[start - 1] == group_time:
+            start -= 1
+        words = self.lines[start].words
+        return [{"t": w.start_ms, "s": w.text} for w in words]
+
     def full_text(self) -> str:
         if self.synced:
             return "\n".join(ln.text for ln in self.lines)
@@ -85,6 +110,27 @@ def _time_from_tag(minutes: str, seconds: str, fraction: str) -> Optional[int]:
         return None
 
 
+def _parse_enhanced_words(body: str, line_start_ms: Optional[int]) -> List[LyricWord]:
+    """Parse Enhanced LRC word tags `<mm:ss.xx>` inside a line body."""
+    if not body or "<" not in body:
+        return []
+    words: List[LyricWord] = []
+    prev_start = line_start_ms
+    pos = 0
+    for m in _WORD_TIME_RE.finditer(body):
+        seg = body[pos:m.start()]
+        if seg and prev_start is not None:
+            words.append(LyricWord(prev_start, seg))
+        prev_start = _time_from_tag(m.group(1), m.group(2), m.group(3) or "")
+        pos = m.end()
+    tail = body[pos:]
+    if tail and prev_start is not None:
+        words.append(LyricWord(prev_start, tail))
+    if len(words) < 2:
+        return []
+    return words
+
+
 def parse_lrc(text: str) -> Lyrics:
     synced = False
     metadata: Dict[str, str] = {}
@@ -108,11 +154,26 @@ def parse_lrc(text: str) -> Lyrics:
             body = line[tags[-1].end():].strip()
             if not body:
                 continue
+            first_ms = _time_from_tag(tags[0].group(1), tags[0].group(2), tags[0].group(3) or "")
+            words = _parse_enhanced_words(body, first_ms)
+            text = _WORD_TIME_RE.sub("", body)
+            stripped = text.strip()
+            if stripped != text:
+                lead = len(text) - len(text.lstrip())
+                trail = len(text) - len(text.rstrip())
+                text = stripped
+                if words:
+                    if lead:
+                        w0 = words[0]
+                        words[0] = LyricWord(w0.start_ms, w0.text[lead:] if len(w0.text) >= lead else w0.text)
+                    if trail:
+                        wl = words[-1]
+                        words[-1] = LyricWord(wl.start_ms, wl.text[:len(wl.text) - trail] if len(wl.text) >= trail else wl.text)
             for tag in tags:
                 time_ms = _time_from_tag(tag.group(1), tag.group(2), tag.group(3) or "")
                 if time_ms is None:
                     continue
-                lines.append(LyricLine(time_ms, body))
+                lines.append(LyricLine(time_ms, text, words=words))
         else:
             unsynced.append(line)
 
@@ -124,6 +185,8 @@ def parse_lrc(text: str) -> Lyrics:
     if offset:
         for ln in lines:
             ln.time_ms += offset
+            for w in ln.words:
+                w.start_ms += offset
     lines.sort(key=lambda ln: ln.time_ms)
     return Lyrics(synced=synced, lines=lines, unsynced_lines=unsynced, metadata=metadata, raw=text)
 
