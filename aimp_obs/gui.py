@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from .aimp_api import CMD_NEXT, CMD_PLAYPAUSE, CMD_PREV, CMD_STOP, AimpClient, AlbumArtReceiver
 from .cover import CoverStore
+from .demo import demo_cover_bytes, demo_snapshot
 from .overlay import THEMES, OverlayConfig
 from .paths import icon_path
 from .settings import SettingsStore
@@ -72,6 +73,8 @@ class App(ctk.CTk):
         self._last_ui: dict = {}
         self._last_progress = -1
         self._last_time_text = ""
+        self._demo_active = False
+        self._real_cover: Optional[bytes] = None
         self._anchor_pos = 0
         self._anchor_wall = 0.0
         self._anchor_playing = False
@@ -538,6 +541,10 @@ class App(ctk.CTk):
         win.geometry("840x760")
         win.minsize(780, 560)
         win.configure(fg_color=COLORS["bg"])
+        win.transient(self)
+        win.lift()
+        win.focus_force()
+        win.after(80, win.lift)
         scroll = ctk.CTkScrollableFrame(win, fg_color=COLORS["bg"], corner_radius=0)
         scroll.pack(fill="both", expand=True)
         self._build_style_panel(scroll)
@@ -932,7 +939,15 @@ class App(ctk.CTk):
     def _poll(self) -> None:
         if self._closing:
             return
-        snap = self.state_hub.refresh()
+        demo = bool(getattr(self.server.config, "demo", False))
+        if demo != self._demo_active:
+            self._demo_active = demo
+            if demo:
+                self._real_cover = self.cover_store.get()[0]
+                self.cover_store.update(demo_cover_bytes())
+            elif self._real_cover is not None:
+                self.cover_store.update(self._real_cover)
+        snap = demo_snapshot() if demo else self.state_hub.refresh()
         self._last_snap = snap
         self._update_ui(snap)
         try:

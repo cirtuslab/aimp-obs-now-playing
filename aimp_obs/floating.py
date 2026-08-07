@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from .aimp_api import CMD_NEXT, CMD_PLAYPAUSE, CMD_PREV, CMD_STOP
 from .cover import CoverStore
+from .demo import demo_snapshot
 from .overlay import THEMES, OverlayConfig
 from .paths import icon_path
 from .state import StateHub, format_time
@@ -705,7 +706,7 @@ class FloatingOverlay:
             self._hotkey_event.clear()
             self.toggle_lock()
         self._sync_config()
-        snap = self.state_hub.snapshot()
+        snap = demo_snapshot() if getattr(self.config, "demo", False) else self.state_hub.snapshot()
         if snap.get("cover_ts", 0) != self._cover_ts:
             self._draw()
         self._update_dynamic(snap)
