@@ -24,7 +24,7 @@
 
 ![桌面悬浮窗](screenshot-floating.png)
 
-![OBS 主题总览](screenshot-themes.png)
+![OBS 覆盖页](screenshot-overlay.png)
 
 ## 快速开始
 
