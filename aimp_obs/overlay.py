@@ -518,7 +518,10 @@ __THEME_CSS__
 
   function setContent(node, text, words) {
     if (words && words.length >= 2) {
-      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('');
+      // Words cover the original line; keep any extra lines (e.g. translation) as plain tail.
+      const joined = words.map(w => w.s).join('');
+      const tail = text.length > joined.length ? text.slice(joined.length) : '';
+      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
       if (node.innerHTML !== html) node.innerHTML = html;
     } else {
       if (node.textContent !== text) node.textContent = text;
@@ -689,10 +692,7 @@ __THEME_CSS__
   // Word-level bolding for Enhanced LRC: highlight the word that is playing now.
   function wordHighlightLoop() {
     if (currentWords.length >= 2) {
-      let pos = (lastSnap && lastSnap.position_ms) || 0;
-      if (lastSnap && lastSnap.state === 'playing') {
-        pos += Date.now() - Math.round((lastSnap.updated_at || Date.now() / 1000) * 1000);
-      }
+      const pos = (lastSnap && lastSnap.position_ms) || 0;
       let idx = -1;
       for (let i = 0; i < currentWords.length; i++) {
         if (currentWords[i].t <= pos) idx = i;
@@ -702,7 +702,7 @@ __THEME_CSS__
         activeWordIdx = idx;
         const spans = topEl.querySelectorAll('.lw');
         for (let i = 0; i < spans.length; i++) {
-          spans[i].classList.toggle('active', i === idx);
+          spans[i].classList.toggle('active', i <= idx);
         }
       }
     }
@@ -713,7 +713,7 @@ __THEME_CSS__
   // ---- demo mode: preview without AIMP ----
   function runDemo() {
     const demoLyrics = [
-      { t: 0, text: '♪ 示例歌词第一行', words: [{t:0,s:'♪ 示'},{t:900,s:'例'},{t:1700,s:'歌'},{t:2500,s:'词'},{t:3300,s:'第一'},{t:4500,s:'行'}] },
+      { t: 0, text: '♪ 示例歌词第一行\n（示例翻译）', words: [{t:0,s:'♪ 示'},{t:900,s:'例'},{t:1700,s:'歌'},{t:2500,s:'词'},{t:3300,s:'第一'},{t:4500,s:'行'}] },
       { t: 12000, text: '♪ 示例歌词第二行', words: [{t:12000,s:'♪ 示例'},{t:13200,s:'歌词'},{t:14600,s:'第二行'}] },
       { t: 24000, text: '♪ 示例歌词第三行', words: [{t:24000,s:'♪ 示例'},{t:25200,s:'歌词'},{t:26600,s:'第三行'}] },
       { t: 36000, text: '♪ 示例歌词第四行', words: [{t:36000,s:'♪ 示例'},{t:37200,s:'歌词'},{t:38600,s:'第四行'}] },
