@@ -179,55 +179,15 @@ class LyricsProvider:
     @staticmethod
     def _load_embedded(path: Path) -> Optional[Lyrics]:
         try:
-            from mutagen import File
+            from tinytag import TinyTag
         except ImportError:
             return None
         try:
-            audio = File(path)
-            if audio is None:
+            tag = TinyTag.get(path, tags=True, duration=False)
+            values = tag.other.get("lyrics") if hasattr(tag, "other") else None
+            if not values:
                 return None
-            text = _extract_tag_lyrics(audio)
-            if not text:
-                return None
+            text = "\n".join(str(v) for v in values)
             return parse_lrc(text)
         except Exception:
             return None
-
-
-def _extract_tag_lyrics(audio) -> Optional[str]:
-    tags = getattr(audio, "tags", None)
-    if tags is None:
-        return None
-    try:
-        # ID3 (MP3)
-        from mutagen.id3 import USLT
-        values = []
-        for frame in tags.values():
-            if isinstance(frame, USLT) and frame.text:
-                values.append(str(frame.text))
-        if values:
-            return "\n".join(values)
-    except Exception:
-        pass
-
-    # MP4 / M4A
-    try:
-        lyr = tags.get("\xa9lyr")
-        if lyr:
-            if isinstance(lyr, list):
-                return "\n".join(str(x) for x in lyr)
-            return str(lyr)
-    except Exception:
-        pass
-
-    # Vorbis comments (FLAC / OGG / Opus)
-    try:
-        for key in ("LYRICS", "UNSYNCEDLYRICS", "LYRIC"):
-            val = audio.get(key)
-            if val:
-                if isinstance(val, list):
-                    return "\n".join(str(x) for x in val)
-                return str(val)
-    except Exception:
-        pass
-    return None

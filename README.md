@@ -1,6 +1,6 @@
 # AIMP Now Playing → OBS
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078d6.svg)]()
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)]()
 
@@ -138,7 +138,7 @@ GitHub Actions 会在 Windows 上自动执行测试并构建 exe。
 - Python 3.10+，`ctypes` 直接调用 Win32 API
 - AIMP Remote API（窗口消息 + 共享内存 + `WM_COPYDATA` 封面）
 - CustomTkinter（主界面）、Tkinter Canvas（悬浮窗）
-- Pillow（图片处理）、mutagen（音频标签/内嵌封面歌词）
+- Pillow（图片处理）、tinytag（音频标签/内嵌封面歌词）
 - PyInstaller（单文件打包）
 
 ## 项目结构
@@ -188,21 +188,21 @@ AIMP-OBS-NowPlaying/
 
 ## 许可证
 
-本项目采用 **GPL-3.0-or-later**（见 [LICENSE](LICENSE)）。
+本项目采用 **MIT**（见 [LICENSE](LICENSE)）。
 
 主要依赖许可证：
 
-- mutagen：GPL-2.0-or-later
+- tinytag：MIT
 - Pillow：HPND
 - CustomTkinter：MIT
 - PyInstaller：GPL-2.0-or-later（含分发例外）
 
-> `assets/icon.ico` 为项目作者提供的 logo，不属于 GPL 许可证覆盖范围，未经许可请勿在其他项目或分发物中复用。
+> `assets/icon.ico` 为项目作者提供的 logo，随项目以 MIT 许可发布。
 
 ## 致谢
 
 - [AIMP](https://www.aimp.ru/) 及其官方 Remote API / SDK
 - [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
 - [Pillow](https://python-pillow.org/)
-- [mutagen](https://mutagen.readthedocs.io/)
+- [tinytag](https://github.com/tinytag/tinytag)
 - [PyInstaller](https://pyinstaller.org/)

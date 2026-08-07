@@ -31,52 +31,15 @@ def detect_mime(data: bytes) -> str:
 def extract_embedded_cover(path: Path) -> Optional[Tuple[bytes, str]]:
     """Return (image bytes, mime) extracted from the audio file tags."""
     try:
-        from mutagen import File
+        from tinytag import TinyTag
     except ImportError:
         return None
     try:
-        audio = File(path)
-        if audio is None:
-            return None
-        # FLAC / Ogg / Opus
-        pictures = getattr(audio, "pictures", None)
-        if pictures:
-            pic = pictures[0]
-            data = getattr(pic, "data", None)
-            if data:
-                mime = getattr(pic, "mime", None) or detect_mime(bytes(data))
-                return bytes(data), mime
-        tags = getattr(audio, "tags", None)
-        if tags is None:
-            return None
-        # ID3 APIC (MP3 / AIFF / WAV)
-        try:
-            from mutagen.id3 import APIC
-            for frame in tags.values():
-                if isinstance(frame, APIC) and frame.data:
-                    return bytes(frame.data), frame.mime or detect_mime(bytes(frame.data))
-        except Exception:
-            pass
-        # MP4 covr
-        try:
-            covr = tags.get("covr")
-            if covr:
-                cover = covr[0]
-                data = bytes(cover)
-                if getattr(cover, "imageformat", None) is not None:
-                    try:
-                        from mutagen.mp4 import MP4Cover
-                        fmt = {
-                            MP4Cover.FORMAT_JPEG: "image/jpeg",
-                            MP4Cover.FORMAT_PNG: "image/png",
-                        }.get(cover.imageformat, "image/png")
-                    except Exception:
-                        fmt = detect_mime(data)
-                else:
-                    fmt = detect_mime(data)
-                return data, fmt
-        except Exception:
-            pass
+        tag = TinyTag.get(path, tags=True, duration=False, image=True)
+        img = tag.images.any if tag is not None else None
+        if img is not None and img.data:
+            mime = img.mime_type or detect_mime(img.data)
+            return bytes(img.data), mime
     except Exception:
         return None
     return None
