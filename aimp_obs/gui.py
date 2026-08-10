@@ -626,6 +626,14 @@ class App(ctk.CTk):
         devs.enabled = on
         self.settings.mobile_enabled = on
         self.settings.save()
+        if on and self.server.host in ("127.0.0.1", "localhost", "::1"):
+            # Rebind to 0.0.0.0 so phones on the LAN can reach /m.
+            self.server.host = "0.0.0.0"
+            self.server.stop()
+            ok = self.server.start()
+            if not ok:
+                self.server.host = "127.0.0.1"
+                self.server.start()
         self._refresh_mobile_view()
 
     def _mobile_poll(self) -> None:
@@ -646,6 +654,8 @@ class App(ctk.CTk):
             w.destroy()
         for w in self.mobile_approved.winfo_children():
             w.destroy()
+        ip = self._lan_ip()
+        self.lbl_mobile_url.configure(text=f"http://{ip}:{self.server.port}/m")
         if not devs.enabled:
             self.lbl_mobile_hint.configure(
                 text="手机连接已关闭。开启后，手机首次访问会出现在“待审核设备”中，同意后才能读取信息与播放控制。"

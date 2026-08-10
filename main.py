@@ -80,6 +80,11 @@ def main(argv=None) -> int:
     devices = DeviceManager(default_settings_path().parent / "devices.json")
     devices.enabled = (not args.headless) and settings.mobile_enabled
 
+    # When mobile access is enabled, listen on all interfaces so phones can connect.
+    host = args.host
+    if devices.enabled and host in ("127.0.0.1", "localhost", "::1"):
+        host = "0.0.0.0"
+
     def _control(action: str) -> bool:
         mapping = {
             "prev": lambda: client.send_command(CMD_PREV),
@@ -97,7 +102,7 @@ def main(argv=None) -> int:
             return False
 
     server = OverlayServer(
-        state_hub, cover_store, host=args.host, port=port,
+        state_hub, cover_store, host=host, port=port,
         config=settings.overlay, devices=devices, control_cb=_control,
     )
     server_started = server.start()
