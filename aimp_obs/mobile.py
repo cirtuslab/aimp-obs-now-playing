@@ -1,7 +1,8 @@
 """Mobile (iPhone) read-only now-playing page: portrait + landscape.
 
 First connection requires approval in the GUI (device auth). Once approved the
-page receives a token and can read state and send playback controls.
+page receives a token and can read state and send playback controls. Includes
+the same lyric rolling animation and smooth progress as the OBS browser source.
 """
 
 from __future__ import annotations
@@ -13,15 +14,18 @@ MOBILE_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AIMP Now Playing">
+<link rel="manifest" href="/m/manifest.webmanifest">
 <title>AIMP Now Playing</title>
 <style>
   :root { color-scheme: dark; --bg:#0f1218; --text:#f2f3f7; --dim:#9aa3b5; --accent:#ff9f19; --accent2:#ffd08a; }
   * { box-sizing:border-box; margin:0; padding:0; }
-  html, body { height:100%; }
+  html, body { height:100%; height:100vh; height:100dvh; }
   body { background:var(--bg); color:var(--text); font-family:-apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; overflow:hidden; }
   .wrap {
-    height:100%;
+    height:100%; height:100vh; height:100dvh;
     padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
     display:flex; flex-direction:column;
   }
@@ -33,23 +37,29 @@ MOBILE_HTML = """<!DOCTYPE html>
   .state { display:inline-block; margin-top:10px; font-size:12px; letter-spacing:.08em; color:var(--accent); border:1px solid var(--accent); padding:3px 12px; border-radius:999px; }
   .progress { margin-top:16px; }
   .bar { height:6px; border-radius:3px; background:#262d3b; overflow:hidden; }
-  .bar i { display:block; height:100%; width:0; background:linear-gradient(90deg, var(--accent), var(--accent2)); }
+  .bar i { display:block; height:100%; width:0; background:linear-gradient(90deg, var(--accent), var(--accent2)); transition:width 0.25s linear; }
   .times { display:flex; justify-content:space-between; margin-top:5px; font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
-  .lyrics { flex:1 1 auto; min-height:0; margin-top:16px; overflow:hidden; display:flex; flex-direction:column; justify-content:flex-end; }
-  .lyric-cur { font-size:18px; line-height:1.5; font-weight:600; word-break:break-word; white-space:pre-wrap; }
+  .lyrics { flex:1 1 auto; min-height:0; margin-top:16px; overflow:hidden; display:flex; align-items:flex-end; }
+  .lyrics-inner { position:relative; width:100%; min-height:44px; }
+  .lyric-cur, .lyric-next {
+    position:absolute; left:0; right:0; top:0;
+    white-space:pre-wrap; word-break:break-word;
+    will-change:transform, opacity;
+  }
+  .lyric-cur { font-size:18px; line-height:1.5; font-weight:600; }
   .lyric-cur .lw { font-weight:400; }
   .lyric-cur .lw.active { font-weight:800; color:var(--accent); }
-  .lyric-next { margin-top:8px; font-size:14px; color:var(--dim); line-height:1.45; word-break:break-word; white-space:pre-wrap; }
+  .lyric-next { font-size:14px; color:var(--dim); line-height:1.45; }
   .lyrics-none { color:var(--dim); font-size:14px; line-height:1.5; }
   @media (orientation: landscape) {
     .wrap { flex-direction:row; align-items:center; gap:24px; }
     .cover-wrap { padding:0; flex:0 0 auto; }
     .cover { width:min(32vh, 230px); }
-    .right { flex:1 1 auto; min-width:0; height:100%; display:flex; flex-direction:column; justify-content:center; }
+    .right { flex:1 1 auto; min-width:0; height:100%; height:100dvh; display:flex; flex-direction:column; justify-content:center; }
     .meta { text-align:left; }
     .state { margin-top:8px; }
     .progress { margin-top:12px; }
-    .lyrics { margin-top:12px; flex:0 1 auto; max-height:46%; justify-content:flex-start; }
+    .lyrics { margin-top:12px; flex:0 1 auto; max-height:46%; align-items:flex-start; }
   }
   /* auth overlay */
   #authOverlay {
@@ -58,7 +68,7 @@ MOBILE_HTML = """<!DOCTYPE html>
   }
   #authOverlay .dot { width:46px; height:46px; border-radius:50%; border:3px solid var(--accent); border-top-color:transparent; animation:spin 1s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
-  #authStatus { font-size:15px; color:var(--text); line-height:1.5; }
+  #authStatus { font-size:15px; color:var(--text); line-height:1.5; white-space:pre-wrap; }
   #authRetry { display:none; font-size:14px; color:var(--accent); background:transparent; border:1px solid var(--accent); padding:8px 18px; border-radius:999px; }
   /* control */
   #ctrlBtn {
@@ -96,9 +106,11 @@ MOBILE_HTML = """<!DOCTYPE html>
         <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
       </div>
       <div class="lyrics" id="lyricsBox">
-        <div class="lyric-cur" id="lyricCur"></div>
-        <div class="lyric-next" id="lyricNext"></div>
-        <div class="lyrics-none" id="lyricNone" style="display:none">暂无歌词</div>
+        <div class="lyrics-inner" id="lyricsInner">
+          <div class="lyric-cur" id="lyricCur"></div>
+          <div class="lyric-next" id="lyricNext"></div>
+          <div class="lyrics-none" id="lyricNone" style="display:none">暂无歌词</div>
+        </div>
       </div>
     </div>
   </div>
@@ -118,12 +130,13 @@ MOBILE_HTML = """<!DOCTYPE html>
     overlay: $('authOverlay'), status: $('authStatus'), retry: $('authRetry'),
     wrap: $('mainWrap'), cover: $('cover'), title: $('title'), sub: $('sub'), state: $('state'),
     bar: $('barFill'), tCur: $('tCur'), tDur: $('tDur'),
-    cur: $('lyricCur'), next: $('lyricNext'), none: $('lyricNone'),
+    inner: $('lyricsInner'), cur: $('lyricCur'), next: $('lyricNext'), none: $('lyricNone'),
     ctrlBtn: $('ctrlBtn'), ctrlPanel: $('ctrlPanel'),
   };
   const LS_ID = 'aimp_device_id';
   const LS_TOKEN = 'aimp_token';
   const NL = String.fromCharCode(10);
+  const LYR_GAP = 4;
 
   const fmt = ms => {
     ms = Math.max(0, Math.floor((ms || 0) / 1000));
@@ -180,7 +193,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         return;
       }
       if (st && st.rejected) {
-        setOverlay('连接请求已被拒绝\\n点击下方按钮重新申请', true);
+        setOverlay('连接请求已被拒绝' + NL + '点击下方按钮重新申请', true);
         return;
       }
       if (st && st.ok === false && st.error) {
@@ -219,23 +232,100 @@ MOBILE_HTML = """<!DOCTYPE html>
     });
   });
 
-  // ---------- state rendering ----------
+  // ---------- lyric rendering with rolling animation ----------
   let snap = null;
   let words = [];
   let activeIdx = -1;
   let curText = '';
+  let lyricTimer = null;
+  let pendingTop = null;
+  let pendingBot = '';
+  let pendingTopWords = [];
 
-  function renderWords() {
-    if (words && words.length >= 2) {
-      const joined = words.map(w => w.s).join('');
-      const tail = curText.length > joined.length ? curText.slice(joined.length) : '';
-      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
-      if (el.cur.innerHTML !== html) { el.cur.innerHTML = html; activeIdx = -1; }
-      el.cur.style.fontSize = '';
+  function setContent(node, text, wds) {
+    if (wds && wds.length >= 2) {
+      const joined = wds.map(w => w.s).join('');
+      const tail = text.length > joined.length ? text.slice(joined.length) : '';
+      const html = wds.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
+      if (node.innerHTML !== html) node.innerHTML = html;
     } else {
-      if (el.cur.textContent !== curText) { el.cur.textContent = curText; activeIdx = -1; }
-      el.cur.style.fontSize = '';
+      if (node.textContent !== text) node.textContent = text;
     }
+    activeIdx = -1;
+  }
+
+  function layoutLyrics() {
+    const topH = el.cur.offsetHeight || 26;
+    const botH = el.next.offsetHeight || 20;
+    el.cur.style.top = '0px';
+    el.cur.style.fontSize = '18px';
+    el.cur.style.color = 'var(--text)';
+    el.next.style.top = (topH + LYR_GAP) + 'px';
+    el.next.style.fontSize = '14px';
+    el.next.style.color = 'var(--dim)';
+    el.inner.style.height = (topH + LYR_GAP + botH) + 'px';
+  }
+
+  function rollLyrics(newTop, newBot, newTopWords) {
+    const oldTop = el.cur.textContent;
+    if (!oldTop) {
+      setContent(el.cur, newTop, newTopWords);
+      words = newTopWords || [];
+      el.next.textContent = newBot;
+      pendingTop = null; pendingBot = ''; pendingTopWords = [];
+      layoutLyrics();
+      el.cur.style.transition = 'none';
+      el.cur.style.opacity = '0';
+      void el.cur.offsetHeight;
+      el.cur.style.transition = 'opacity 0.25s ease';
+      el.cur.style.opacity = '1';
+      return;
+    }
+    if (lyricTimer) { clearTimeout(lyricTimer); lyricTimer = null; }
+    pendingTop = newTop;
+    pendingTopWords = newTopWords || [];
+    pendingBot = newBot;
+    const distance = (el.cur.offsetHeight || 26) + LYR_GAP;
+    layoutLyrics();
+
+    el.cur.style.transition = 'transform 0.28s ease-in, opacity 0.28s ease-in';
+    el.next.style.transition = 'transform 0.28s ease-out, opacity 0.28s ease-out, color 0.28s ease-out, font-size 0.28s ease-out';
+    el.cur.style.transform = 'translateY(-' + distance + 'px)';
+    el.cur.style.opacity = '0';
+    el.next.style.transform = 'translateY(-' + distance + 'px)';
+    el.next.style.opacity = '1';
+    el.next.style.color = 'var(--text)';
+    el.next.style.fontSize = '18px';
+
+    lyricTimer = setTimeout(() => {
+      el.cur.style.transition = 'none';
+      el.next.style.transition = 'none';
+
+      setContent(el.cur, pendingTop, pendingTopWords);
+      words = pendingTopWords;
+      el.cur.style.top = '0px';
+      el.cur.style.transform = 'translateY(0)';
+      el.cur.style.opacity = '1';
+      el.cur.style.color = 'var(--text)';
+      el.cur.style.fontSize = '18px';
+
+      el.next.textContent = pendingBot;
+      const newTopH = el.cur.offsetHeight || 26;
+      el.next.style.top = (newTopH + LYR_GAP) + 'px';
+      el.next.style.transform = 'translateY(0)';
+      el.next.style.opacity = '0';
+      el.next.style.color = 'var(--dim)';
+      el.next.style.fontSize = '14px';
+      void el.next.offsetHeight;
+      el.next.style.transition = 'transform 0.3s ease-out, opacity 0.3s ease-out';
+      el.next.style.opacity = '1';
+
+      layoutLyrics();
+      lyricTimer = null;
+      pendingTop = null;
+      pendingBot = '';
+      pendingTopWords = [];
+    }, 290);
   }
 
   function render(s) {
@@ -247,25 +337,37 @@ MOBILE_HTML = """<!DOCTYPE html>
     el.cover.src = '/cover.png?t=' + (s.cover_ts || 0) + (token ? '&token=' + encodeURIComponent(token) : '');
     el.tDur.textContent = s.duration || fmt(s.duration_ms || 0);
 
+    const cur = s.lyrics_current || '';
+    const nxt = s.lyrics_next || '';
+    const wds = Array.isArray(s.lyrics_words) ? s.lyrics_words : [];
     el.none.style.display = 'none';
     if (s.lyrics_synced) {
-      curText = s.lyrics_current || '';
-      words = Array.isArray(s.lyrics_words) ? s.lyrics_words : [];
-      renderWords();
-      el.next.textContent = s.lyrics_next || '';
-      el.next.style.display = s.lyrics_next ? '' : 'none';
-      if (!curText && !s.lyrics_next) el.none.style.display = '';
+      el.next.style.display = nxt ? '' : 'none';
+      if (cur && cur !== el.cur.textContent) {
+        rollLyrics(cur, nxt, wds);
+      } else {
+        if (el.cur.textContent !== cur) setContent(el.cur, cur, wds);
+        words = wds;
+        if (el.next.textContent !== nxt) el.next.textContent = nxt;
+        layoutLyrics();
+      }
+      if (!cur && !nxt) {
+        el.inner.style.height = 'auto';
+        el.none.style.display = '';
+      }
     } else if (Array.isArray(s.lyrics_full) && s.lyrics_full.length) {
       curText = s.lyrics_full.slice(-4).join(NL);
       words = [];
-      renderWords();
+      setContent(el.cur, curText, []);
       el.next.style.display = 'none';
       el.cur.style.fontSize = '15px';
+      el.inner.style.height = 'auto';
     } else {
       curText = '';
       words = [];
-      renderWords();
+      setContent(el.cur, '', []);
       el.next.style.display = 'none';
+      el.inner.style.height = 'auto';
       el.none.style.display = '';
     }
   }
@@ -325,6 +427,32 @@ MOBILE_HTML = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+MANIFEST = {
+    "name": "AIMP Now Playing",
+    "short_name": "AIMP",
+    "start_url": "/m",
+    "display": "standalone",
+    "background_color": "#0f1218",
+    "theme_color": "#0f1218",
+    "icons": [
+        {"src": "/m/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+    ],
+}
+
+
+def render_manifest() -> str:
+    import json
+    return json.dumps(MANIFEST, ensure_ascii=False)
+
+
+def mobile_icon_png() -> bytes:
+    """512x512 PNG app icon (reuses the demo cover art)."""
+    try:
+        from .demo import demo_cover_bytes
+        return demo_cover_bytes()
+    except Exception:
+        return b""
 
 
 def render_mobile() -> str:

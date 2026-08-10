@@ -1,4 +1,4 @@
-from aimp_obs.mobile import render_mobile
+from aimp_obs.mobile import mobile_icon_png, render_manifest, render_mobile
 
 
 def test_mobile_page_has_core_elements():
@@ -27,3 +27,12 @@ def test_mobile_page_has_no_html_form():
     # read-only display: no form-based writes; controls use fetch only
     html = render_mobile()
     assert "<form" not in html.lower()
+
+
+def test_mobile_manifest_and_icon():
+    import json
+    manifest = json.loads(render_manifest())
+    assert manifest["display"] == "standalone"
+    assert manifest["start_url"] == "/m"
+    png = mobile_icon_png()
+    assert png.startswith(b"\x89PNG")

@@ -11,7 +11,7 @@ from typing import Callable, Optional
 
 from .cover import CoverStore
 from .devices import DeviceManager
-from .mobile import render_mobile
+from .mobile import mobile_icon_png, render_manifest, render_mobile
 from .overlay import OverlayConfig, render_gallery, render_overlay
 
 PROTECTED_GET = {"/api/state", "/cover.png", "/lyrics.lrc", "/api/config"}
@@ -93,6 +93,25 @@ class _Handler(BaseHTTPRequestHandler):
                     self._deny("手机连接未开启，请在电脑端 GUI 中启用")
                     return
                 self._send_text(render_mobile(), "text/html; charset=utf-8")
+            elif path == "/m/manifest.webmanifest":
+                if not self._mobile_on():
+                    self._deny("手机连接未开启")
+                    return
+                self._send_text(render_manifest(), "application/manifest+json; charset=utf-8")
+            elif path == "/m/icon.png":
+                if not self._mobile_on():
+                    self._deny("手机连接未开启")
+                    return
+                data = mobile_icon_png()
+                if not data:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
             elif path == "/api/device/status":
                 if not self._mobile_on():
                     self._deny("手机连接未开启")
