@@ -48,14 +48,21 @@ MOBILE_HTML = """<!DOCTYPE html>
   }
   .lyric-cur { font-size:18px; line-height:1.5; font-weight:600; }
   .lyric-cur .lw {
+    position:relative;
     font-weight:400;
-    background-image:linear-gradient(90deg, var(--accent), var(--accent2));
-    background-repeat:no-repeat;
-    background-position:left center;
-    background-size:0% 100%;
+    color:var(--text);
     transition:color 0.12s ease, font-weight 0.12s ease;
   }
-  .lyric-cur .lw.active { font-weight:800; color:var(--accent); }
+  .lyric-cur .lw::after {
+    content:attr(data-text);
+    position:absolute; left:0; top:0; width:100%; height:100%;
+    background-image:linear-gradient(90deg, var(--accent), var(--accent2));
+    background-repeat:no-repeat; background-position:left center;
+    background-size:var(--fill, 0%) 100%;
+    -webkit-background-clip:text; background-clip:text;
+    -webkit-text-fill-color:transparent; color:transparent; pointer-events:none;
+  }
+  .lyric-cur .lw.active { font-weight:800; }
   .lyric-next { font-size:14px; color:var(--dim); line-height:1.45; }
   .lyrics-none { color:var(--dim); font-size:14px; line-height:1.5; }
   @media (orientation: landscape) {
@@ -276,7 +283,7 @@ MOBILE_HTML = """<!DOCTYPE html>
     if (wds && wds.length >= 2) {
       const joined = wds.map(w => w.s).join('');
       const tail = text.length > joined.length ? text.slice(joined.length) : '';
-      const html = wds.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
+      const html = wds.map((w, i) => '<span class="lw" data-i="' + i + '" data-text="' + esc(w.s) + '">' + esc(w.s) + '</span>').join('') + esc(tail);
       if (node.innerHTML !== html) node.innerHTML = html;
     } else {
       if (node.textContent !== text) node.textContent = text;
@@ -426,16 +433,16 @@ MOBILE_HTML = """<!DOCTYPE html>
           const sp = spans[i];
           if (i < idx) {
             sp.classList.add('active');
-            sp.style.backgroundSize = '0% 100%';
+            sp.style.setProperty('--fill', '100%');
           } else if (i === idx) {
             sp.classList.add('active');
             const start = words[i].t;
             const end = i + 1 < words.length ? words[i + 1].t : start + 600;
             const p = end > start ? (pos - start) / (end - start) : 1;
-            sp.style.backgroundSize = (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '% 100%';
+            sp.style.setProperty('--fill', (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '%');
           } else {
             sp.classList.remove('active');
-            sp.style.backgroundSize = '0% 100%';
+            sp.style.setProperty('--fill', '0%');
           }
         }
       }

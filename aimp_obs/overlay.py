@@ -378,14 +378,25 @@ __THEME_CSS__
     will-change: transform, opacity, color;
   }
   .lyric-cur .lw, .lyric-next .lw {
+    position: relative;
     font-weight: 400;
+    color: var(--text);
+    transition: color 0.12s ease, font-weight 0.12s ease;
+  }
+  .lyric-cur .lw::after, .lyric-next .lw::after {
+    content: attr(data-text);
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
     background-image: linear-gradient(90deg, var(--accent), var(--accent2));
     background-repeat: no-repeat;
     background-position: left center;
-    background-size: 0% 100%;
-    transition: color 0.12s ease, font-weight 0.12s ease;
+    background-size: var(--fill, 0%) 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    pointer-events: none;
   }
-  .lyric-cur .lw.active, .lyric-next .lw.active { font-weight: 800; color: var(--accent); }
+  .lyric-cur .lw.active, .lyric-next .lw.active { font-weight: 800; }
   .lyrics-none { color: var(--dim); font-size: 0.85em; font-family: var(--lyric-font), sans-serif; }
   .lyrics-unsynced { color: var(--dim); font-size: 0.84em; line-height: 1.5; font-family: var(--lyric-font), sans-serif; }
 
@@ -530,7 +541,7 @@ __THEME_CSS__
       // Words cover the original line; keep any extra lines (e.g. translation) as plain tail.
       const joined = words.map(w => w.s).join('');
       const tail = text.length > joined.length ? text.slice(joined.length) : '';
-      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
+      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '" data-text="' + esc(w.s) + '">' + esc(w.s) + '</span>').join('') + esc(tail);
       if (node.innerHTML !== html) node.innerHTML = html;
     } else {
       if (node.textContent !== text) node.textContent = text;
@@ -720,16 +731,16 @@ __THEME_CSS__
         const sp = spans[i];
         if (i < idx) {
           sp.classList.add('active');
-          sp.style.backgroundSize = '0% 100%';
+          sp.style.setProperty('--fill', '100%');
         } else if (i === idx) {
           sp.classList.add('active');
           const start = currentWords[i].t;
           const end = i + 1 < currentWords.length ? currentWords[i + 1].t : start + 600;
           const p = end > start ? (pos - start) / (end - start) : 1;
-          sp.style.backgroundSize = (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '% 100%';
+          sp.style.setProperty('--fill', (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '%');
         } else {
           sp.classList.remove('active');
-          sp.style.backgroundSize = '0% 100%';
+          sp.style.setProperty('--fill', '0%');
         }
       }
     }
