@@ -612,6 +612,9 @@ class App(ctk.CTk):
         self.lbl_mobile_hint.pack(anchor="w", padx=18, pady=(6, 10))
 
         win.protocol("WM_DELETE_WINDOW", self._close_mobile_window)
+        # Auto-fit height so both the pending and approved lists are visible.
+        win.update_idletasks()
+        win.geometry(f"460x{win.winfo_reqheight() + 12}")
         self._refresh_mobile_view()
         win.after(2000, self._mobile_poll)
 
