@@ -377,7 +377,14 @@ __THEME_CSS__
     word-break: break-word;
     will-change: transform, opacity, color;
   }
-  .lyric-cur .lw, .lyric-next .lw { font-weight: 400; }
+  .lyric-cur .lw, .lyric-next .lw {
+    font-weight: 400;
+    background-image: linear-gradient(90deg, var(--accent), var(--accent2));
+    background-repeat: no-repeat;
+    background-position: left center;
+    background-size: 0% 100%;
+    transition: color 0.12s ease, font-weight 0.12s ease;
+  }
   .lyric-cur .lw.active, .lyric-next .lw.active { font-weight: 800; color: var(--accent); }
   .lyrics-none { color: var(--dim); font-size: 0.85em; font-family: var(--lyric-font), sans-serif; }
   .lyrics-unsynced { color: var(--dim); font-size: 0.84em; line-height: 1.5; font-family: var(--lyric-font), sans-serif; }
@@ -514,6 +521,8 @@ __THEME_CSS__
   let currentWords = [];
   let activeWordIdx = -1;
   let lastSnap = null;
+  let lastAnchorMs = 0;
+  let lastAnchorAt = 0;
   const LYR_GAP = 4;
 
   function setContent(node, text, words) {
@@ -613,6 +622,8 @@ __THEME_CSS__
 
   function render(s) {
     lastSnap = s;
+    lastAnchorMs = s.position_ms || 0;
+    lastAnchorAt = Date.now();
     el.panel.classList.toggle('hidden', params.get('hide') === 'stopped' && s.state !== 'playing');
     el.title.textContent = s.title || (s.connected ? '未知曲目' : '未检测到 AIMP');
     const subParts = [s.artist, s.album].filter(Boolean);
@@ -692,17 +703,33 @@ __THEME_CSS__
   // Word-level bolding for Enhanced LRC: highlight the word that is playing now.
   function wordHighlightLoop() {
     if (currentWords.length >= 2) {
-      const pos = (lastSnap && lastSnap.position_ms) || 0;
+      // smooth position: interpolate from the snapshot anchor (device-clock only)
+      let pos = lastAnchorMs;
+      if (lastSnap && lastSnap.state === 'playing') {
+        pos += Date.now() - lastAnchorAt;
+        const dur = lastSnap.duration_ms || 0;
+        if (dur > 0 && pos > dur) pos = dur;
+      }
       let idx = -1;
       for (let i = 0; i < currentWords.length; i++) {
         if (currentWords[i].t <= pos) idx = i;
         else break;
       }
-      if (idx !== activeWordIdx) {
-        activeWordIdx = idx;
-        const spans = topEl.querySelectorAll('.lw');
-        for (let i = 0; i < spans.length; i++) {
-          spans[i].classList.toggle('active', i <= idx);
+      const spans = topEl.querySelectorAll('.lw');
+      for (let i = 0; i < spans.length; i++) {
+        const sp = spans[i];
+        if (i < idx) {
+          sp.classList.add('active');
+          sp.style.backgroundSize = '0% 100%';
+        } else if (i === idx) {
+          sp.classList.add('active');
+          const start = currentWords[i].t;
+          const end = i + 1 < currentWords.length ? currentWords[i + 1].t : start + 600;
+          const p = end > start ? (pos - start) / (end - start) : 1;
+          sp.style.backgroundSize = (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '% 100%';
+        } else {
+          sp.classList.remove('active');
+          sp.style.backgroundSize = '0% 100%';
         }
       }
     }

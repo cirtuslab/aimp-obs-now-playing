@@ -47,7 +47,14 @@ MOBILE_HTML = """<!DOCTYPE html>
     will-change:transform, opacity;
   }
   .lyric-cur { font-size:18px; line-height:1.5; font-weight:600; }
-  .lyric-cur .lw { font-weight:400; }
+  .lyric-cur .lw {
+    font-weight:400;
+    background-image:linear-gradient(90deg, var(--accent), var(--accent2));
+    background-repeat:no-repeat;
+    background-position:left center;
+    background-size:0% 100%;
+    transition:color 0.12s ease, font-weight 0.12s ease;
+  }
   .lyric-cur .lw.active { font-weight:800; color:var(--accent); }
   .lyric-next { font-size:14px; color:var(--dim); line-height:1.45; }
   .lyrics-none { color:var(--dim); font-size:14px; line-height:1.5; }
@@ -414,11 +421,21 @@ MOBILE_HTML = """<!DOCTYPE html>
           if (words[i].t <= pos) idx = i;
           else break;
         }
-        if (idx !== activeIdx) {
-          activeIdx = idx;
-          const spans = el.cur.querySelectorAll('.lw');
-          for (let i = 0; i < spans.length; i++) {
-            spans[i].classList.toggle('active', i <= idx);
+        const spans = el.cur.querySelectorAll('.lw');
+        for (let i = 0; i < spans.length; i++) {
+          const sp = spans[i];
+          if (i < idx) {
+            sp.classList.add('active');
+            sp.style.backgroundSize = '0% 100%';
+          } else if (i === idx) {
+            sp.classList.add('active');
+            const start = words[i].t;
+            const end = i + 1 < words.length ? words[i + 1].t : start + 600;
+            const p = end > start ? (pos - start) / (end - start) : 1;
+            sp.style.backgroundSize = (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '% 100%';
+          } else {
+            sp.classList.remove('active');
+            sp.style.backgroundSize = '0% 100%';
           }
         }
       }
