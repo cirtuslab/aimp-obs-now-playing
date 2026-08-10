@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 
 from .cover import CoverStore
+from .mobile import render_mobile
 from .overlay import OverlayConfig, render_gallery, render_overlay
 
 
@@ -22,6 +23,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_text(render_overlay(), "text/html; charset=utf-8")
             elif path in ("/preview", "/themes"):
                 self._send_text(render_gallery(), "text/html; charset=utf-8")
+            elif path in ("/m", "/mobile"):
+                self._send_text(render_mobile(), "text/html; charset=utf-8")
             elif path == "/api/state":
                 self._send_text(
                     json.dumps(self.server.state_hub.snapshot(), ensure_ascii=False),
