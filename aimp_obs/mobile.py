@@ -1,4 +1,8 @@
-"""Mobile (iPhone) read-only now-playing page: portrait + landscape."""
+"""Mobile (iPhone) read-only now-playing page: portrait + landscape.
+
+First connection requires approval in the GUI (device auth). Once approved the
+page receives a token and can read state and send playback controls.
+"""
 
 from __future__ import annotations
 
@@ -47,10 +51,39 @@ MOBILE_HTML = """<!DOCTYPE html>
     .progress { margin-top:12px; }
     .lyrics { margin-top:12px; flex:0 1 auto; max-height:46%; justify-content:flex-start; }
   }
+  /* auth overlay */
+  #authOverlay {
+    position:fixed; inset:0; z-index:50; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+    background:rgba(10,13,20,.92); backdrop-filter:blur(6px); text-align:center; padding:24px;
+  }
+  #authOverlay .dot { width:46px; height:46px; border-radius:50%; border:3px solid var(--accent); border-top-color:transparent; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #authStatus { font-size:15px; color:var(--text); line-height:1.5; }
+  #authRetry { display:none; font-size:14px; color:var(--accent); background:transparent; border:1px solid var(--accent); padding:8px 18px; border-radius:999px; }
+  /* control */
+  #ctrlBtn {
+    position:fixed; right:max(14px, env(safe-area-inset-right)); bottom:max(14px, env(safe-area-inset-bottom));
+    z-index:40; width:40px; height:40px; border-radius:50%; border:1px solid rgba(255,255,255,.18);
+    background:rgba(30,36,50,.55); color:var(--dim); font-size:16px; opacity:.5;
+  }
+  #ctrlPanel {
+    position:fixed; right:max(14px, env(safe-area-inset-right)); bottom:max(64px, calc(env(safe-area-inset-bottom) + 50px));
+    z-index:39; display:none; gap:8px; background:rgba(20,25,36,.9); border:1px solid rgba(255,255,255,.12);
+    border-radius:14px; padding:10px 12px;
+  }
+  #ctrlPanel.on { display:flex; }
+  #ctrlPanel button { min-width:44px; height:44px; border-radius:10px; border:none; background:#2a3140; color:var(--text); font-size:17px; }
+  #ctrlPanel button:active { background:#39415a; }
 </style>
 </head>
 <body>
-  <div class="wrap">
+  <div id="authOverlay">
+    <div class="dot"></div>
+    <div id="authStatus">正在连接…</div>
+    <button id="authRetry">重新申请</button>
+  </div>
+
+  <div class="wrap" id="mainWrap" style="display:none">
     <div class="cover-wrap"><img id="cover" class="cover" alt="cover"></div>
     <div class="right">
       <div class="meta">
@@ -69,21 +102,124 @@ MOBILE_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <button id="ctrlBtn" title="播放控制">⏯</button>
+  <div id="ctrlPanel">
+    <button data-a="prev" title="上一首">⏮</button>
+    <button data-a="playpause" title="播放/暂停">⏯</button>
+    <button data-a="stop" title="停止">⏹</button>
+    <button data-a="next" title="下一首">⏭</button>
+  </div>
+
 <script>
 (() => {
   const $ = id => document.getElementById(id);
   const el = {
-    cover: $('cover'), title: $('title'), sub: $('sub'), state: $('state'),
+    overlay: $('authOverlay'), status: $('authStatus'), retry: $('authRetry'),
+    wrap: $('mainWrap'), cover: $('cover'), title: $('title'), sub: $('sub'), state: $('state'),
     bar: $('barFill'), tCur: $('tCur'), tDur: $('tDur'),
     cur: $('lyricCur'), next: $('lyricNext'), none: $('lyricNone'),
+    ctrlBtn: $('ctrlBtn'), ctrlPanel: $('ctrlPanel'),
   };
+  const LS_ID = 'aimp_device_id';
+  const LS_TOKEN = 'aimp_token';
+  const NL = String.fromCharCode(10);
+
   const fmt = ms => {
     ms = Math.max(0, Math.floor((ms || 0) / 1000));
     const h = Math.floor(ms / 3600), m = Math.floor(ms % 3600 / 60), s = ms % 60;
     return h ? h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') : m + ':' + String(s).padStart(2, '0');
   };
   const esc = s => (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const genId = () => 'dev-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
+  let deviceId = localStorage.getItem(LS_ID) || '';
+  let token = localStorage.getItem(LS_TOKEN) || '';
+
+  function apiGet(path, params) {
+    const q = new URLSearchParams(params || {});
+    if (token) q.set('token', token);
+    return fetch(path + (q.toString() ? '?' + q.toString() : ''), { cache: 'no-store' })
+      .then(r => r.json().catch(() => ({})));
+  }
+  function apiPost(path, body) {
+    const q = new URLSearchParams();
+    if (token) q.set('token', token);
+    return fetch(path + (q.toString() ? '?' + q.toString() : ''), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }).then(r => r.json().catch(() => ({})));
+  }
+
+  function setOverlay(text, retry) {
+    el.status.textContent = text;
+    el.retry.style.display = retry ? '' : 'none';
+    el.overlay.style.display = 'flex';
+  }
+
+  // ---------- device approval ----------
+  async function ensureApproved() {
+    if (!deviceId) {
+      deviceId = genId();
+      localStorage.setItem(LS_ID, deviceId);
+    }
+    try {
+      await fetch('/api/device/register', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deviceId, name: 'iPhone' }),
+      });
+    } catch (e) {}
+    for (;;) {
+      const st = await apiGet('/api/device/status', { id: deviceId });
+      if (st && st.approved && st.token) {
+        token = st.token;
+        localStorage.setItem(LS_TOKEN, token);
+        el.overlay.style.display = 'none';
+        el.wrap.style.display = 'flex';
+        start();
+        return;
+      }
+      if (st && st.rejected) {
+        setOverlay('连接请求已被拒绝\\n点击下方按钮重新申请', true);
+        return;
+      }
+      if (st && st.ok === false && st.error) {
+        setOverlay(st.error, false);
+        return;
+      }
+      setOverlay('等待电脑端同意连接…', false);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
+  el.retry.addEventListener('click', () => {
+    localStorage.removeItem(LS_ID);
+    localStorage.removeItem(LS_TOKEN);
+    location.reload();
+  });
+
+  // ---------- theme from overlay config ----------
+  async function applyTheme() {
+    try {
+      const cfg = await apiGet('/api/config');
+      const set = (k, v) => { if (v) document.documentElement.style.setProperty(k, v); };
+      set('--accent', cfg.accent);
+      set('--accent2', cfg.accent2);
+      set('--text', cfg.text);
+      set('--dim', cfg.dim);
+      if (cfg.bg) document.body.style.background = cfg.bg;
+    } catch (e) {}
+  }
+
+  // ---------- playback control ----------
+  el.ctrlBtn.addEventListener('click', () => el.ctrlPanel.classList.toggle('on'));
+  el.ctrlPanel.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      apiPost('/api/control', { action: btn.getAttribute('data-a') });
+    });
+  });
+
+  // ---------- state rendering ----------
   let snap = null;
   let words = [];
   let activeIdx = -1;
@@ -108,7 +244,7 @@ MOBILE_HTML = """<!DOCTYPE html>
     const sub = [s.artist, s.album, s.genre].filter(Boolean).join(' · ');
     el.sub.textContent = sub || (s.connected ? '' : '');
     el.state.textContent = s.state_text || '';
-    el.cover.src = '/cover.png?t=' + (s.cover_ts || 0);
+    el.cover.src = '/cover.png?t=' + (s.cover_ts || 0) + (token ? '&token=' + encodeURIComponent(token) : '');
     el.tDur.textContent = s.duration || fmt(s.duration_ms || 0);
 
     el.none.style.display = 'none';
@@ -120,7 +256,7 @@ MOBILE_HTML = """<!DOCTYPE html>
       el.next.style.display = s.lyrics_next ? '' : 'none';
       if (!curText && !s.lyrics_next) el.none.style.display = '';
     } else if (Array.isArray(s.lyrics_full) && s.lyrics_full.length) {
-      curText = s.lyrics_full.slice(-4).join('\\n');
+      curText = s.lyrics_full.slice(-4).join(NL);
       words = [];
       renderWords();
       el.next.style.display = 'none';
@@ -164,7 +300,12 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   async function poll() {
     try {
-      const res = await fetch('/api/state?ts=' + Date.now(), { cache: 'no-store' });
+      const res = await fetch('/api/state?ts=' + Date.now() + (token ? '&token=' + encodeURIComponent(token) : ''), { cache: 'no-store' });
+      if (res.status === 403) {
+        localStorage.removeItem(LS_TOKEN);
+        location.reload();
+        return;
+      }
       if (res.ok) render(await res.json());
     } catch (e) {
       el.state.textContent = '服务未连接';
@@ -172,8 +313,13 @@ MOBILE_HTML = """<!DOCTYPE html>
     setTimeout(poll, 1200);
   }
 
-  requestAnimationFrame(tick);
-  poll();
+  function start() {
+    applyTheme();
+    requestAnimationFrame(tick);
+    poll();
+  }
+
+  ensureApproved();
 })();
 </script>
 </body>

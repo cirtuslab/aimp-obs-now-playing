@@ -10,8 +10,20 @@ def test_mobile_page_has_core_elements():
     assert "orientation: landscape" in html
 
 
-def test_mobile_page_has_no_write_controls():
-    # read-only: no POST, no config form
+def test_mobile_page_has_device_auth():
     html = render_mobile()
-    assert "api/config" not in html
-    assert 'method="post"' not in html.lower()
+    assert "authOverlay" in html
+    assert "/api/device/register" in html
+    assert "/api/device/status" in html
+
+
+def test_mobile_page_has_playback_control():
+    html = render_mobile()
+    assert "/api/control" in html
+    assert "ctrlPanel" in html
+
+
+def test_mobile_page_has_no_html_form():
+    # read-only display: no form-based writes; controls use fetch only
+    html = render_mobile()
+    assert "<form" not in html.lower()

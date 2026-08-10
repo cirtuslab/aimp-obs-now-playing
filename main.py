@@ -18,10 +18,15 @@ import time
 from pathlib import Path
 
 from aimp_obs import __version__
-from aimp_obs.aimp_api import AimpClient, AlbumArtReceiver, CMD_UNREGISTER_NOTIFY
+from aimp_obs.aimp_api import (
+    AimpClient, AlbumArtReceiver,
+    CMD_UNREGISTER_NOTIFY, CMD_PREV, CMD_PLAYPAUSE, CMD_NEXT, CMD_STOP,
+)
 from aimp_obs.cover import CoverStore
+from aimp_obs.devices import DeviceManager
 from aimp_obs.paths import app_root
 from aimp_obs.server import OverlayServer
+from aimp_obs.settings import default_settings_path
 from aimp_obs.settings import SettingsStore
 from aimp_obs.state import StateHub
 
@@ -70,12 +75,41 @@ def main(argv=None) -> int:
 
     cover_store = CoverStore()
     state_hub = StateHub(client, receiver, cover_store, export_dir=export_dir)
-    server = OverlayServer(state_hub, cover_store, host=args.host, port=port, config=settings.overlay)
+
+    # Mobile / LAN device access: OFF by default, only enabled from the GUI.
+    devices = DeviceManager(default_settings_path().parent / "devices.json")
+    devices.enabled = (not args.headless) and settings.mobile_enabled
+
+    def _control(action: str) -> bool:
+        mapping = {
+            "prev": lambda: client.send_command(CMD_PREV),
+            "playpause": lambda: client.send_command(CMD_PLAYPAUSE),
+            "next": lambda: client.send_command(CMD_NEXT),
+            "stop": lambda: client.send_command(CMD_STOP),
+        }
+        fn = mapping.get(action)
+        if fn is None:
+            return False
+        try:
+            fn()
+            return True
+        except Exception:
+            return False
+
+    server = OverlayServer(
+        state_hub, cover_store, host=args.host, port=port,
+        config=settings.overlay, devices=devices, control_cb=_control,
+    )
     server_started = server.start()
     if server_started:
         print(f"OBS 浏览器源地址: {server.url}")
     else:
         print("警告: HTTP 服务启动失败", file=sys.stderr)
+    if devices.enabled:
+        print(f"手机连接已启用: http://<局域网IP>:{server.port}/m", file=sys.stdout)
+    else:
+        print("手机连接未启用（默认关闭，可在 GUI 中开启）", file=sys.stdout)
+
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(
             "警告: 服务监听在非回环地址，局域网内其他设备可以访问 /api/config 修改样式。",

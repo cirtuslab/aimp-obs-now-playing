@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import socket
 import time
 import tkinter as tk
 from pathlib import Path
@@ -66,6 +67,7 @@ class App(ctk.CTk):
         self._closing = False
         self._settings_ready = False
         self._settings_window = None
+        self._mobile_window = None
         self._floating = None
         self._cover_ts = -1
         self._cover_image: Optional[ctk.CTkImage] = None
@@ -263,6 +265,13 @@ class App(ctk.CTk):
             border_width=1, border_color=COLORS["accent"], text_color=COLORS["text"],
         )
         self.btn_service.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.btn_mobile = ctk.CTkButton(
+            settings_row, text="📱 手机连接", height=46, corner_radius=14,
+            command=self._open_mobile_window, font=self._font_bold(),
+            fg_color=COLORS["card2"], hover_color=COLORS["button_hover"],
+            border_width=1, border_color=COLORS["accent"], text_color=COLORS["text"],
+        )
+        self.btn_mobile.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.lbl_hint_main = ctk.CTkLabel(
             root, text="样式、OBS 设置和桌面悬浮窗可点击上方按钮打开。",
             font=self._font_small, text_color=COLORS["dim"], anchor="w",
@@ -530,6 +539,170 @@ class App(ctk.CTk):
             font=self._font_small, text_color=COLORS["dim"], anchor="w",
         )
         self.lbl_hint.pack(fill="x", padx=6, pady=(0, 14))
+
+
+    # --------------------------------------------------------- mobile
+    def _lan_ip(self) -> str:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+            finally:
+                s.close()
+        except Exception:
+            return "127.0.0.1"
+
+    def _open_mobile_window(self) -> None:
+        if self._mobile_window is not None and self._mobile_window.winfo_exists():
+            self._mobile_window.focus()
+            return
+        win = ctk.CTkToplevel(self)
+        win.title("手机连接")
+        self._set_window_icon(win)
+        win.geometry("460x430")
+        win.minsize(420, 380)
+        self._mobile_window = win
+        devs = self.server.devices
+        ip = self._lan_ip()
+
+        ctk.CTkLabel(
+            win, text="📱 手机连接", font=self._font_title, text_color=COLORS["text"],
+        ).pack(anchor="w", padx=18, pady=(16, 2))
+        ctk.CTkLabel(
+            win, text="手机与电脑处于同一 Wi-Fi，用 Safari 打开下方地址；首次连接需在电脑上同意。",
+            font=self._font_small, text_color=COLORS["dim"], anchor="w", wraplength=420,
+        ).pack(anchor="w", padx=18)
+
+        self._mobile_switch = ctk.CTkSwitch(
+            win, text="启用手机连接", command=self._toggle_mobile,
+            font=self._font, progress_color=COLORS["accent"],
+        )
+        self._mobile_switch.pack(anchor="w", padx=18, pady=(12, 2))
+        if devs.enabled:
+            self._mobile_switch.select()
+        else:
+            self._mobile_switch.deselect()
+
+        url = f"http://{ip}:{self.server.port}/m"
+        urlrow = ctk.CTkFrame(win, fg_color=COLORS["card2"], corner_radius=10)
+        urlrow.pack(fill="x", padx=18, pady=(6, 2))
+        self.lbl_mobile_url = ctk.CTkLabel(
+            urlrow, text=url, font=self._font_small,
+            text_color=COLORS["accent"], anchor="w",
+        )
+        self.lbl_mobile_url.pack(side="left", padx=12, pady=8)
+
+        ctk.CTkLabel(
+            win, text="待审核设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
+        ).pack(anchor="w", padx=18, pady=(12, 2))
+        self.mobile_pending = ctk.CTkScrollableFrame(win, fg_color="transparent", height=92)
+        self.mobile_pending.pack(fill="x", padx=12, pady=(0, 4))
+
+        ctk.CTkLabel(
+            win, text="已授权设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
+        ).pack(anchor="w", padx=18, pady=(8, 2))
+        self.mobile_approved = ctk.CTkScrollableFrame(win, fg_color="transparent", height=92)
+        self.mobile_approved.pack(fill="x", padx=12, pady=(0, 4))
+
+        self.lbl_mobile_hint = ctk.CTkLabel(
+            win, text="", font=self._font_small, text_color=COLORS["dim"],
+            anchor="w", wraplength=420,
+        )
+        self.lbl_mobile_hint.pack(anchor="w", padx=18, pady=(6, 10))
+
+        win.protocol("WM_DELETE_WINDOW", self._close_mobile_window)
+        self._refresh_mobile_view()
+        win.after(2000, self._mobile_poll)
+
+    def _close_mobile_window(self) -> None:
+        if self._mobile_window is not None:
+            self._mobile_window.destroy()
+            self._mobile_window = None
+
+    def _toggle_mobile(self) -> None:
+        devs = self.server.devices
+        on = bool(self._mobile_switch.get())
+        devs.enabled = on
+        self.settings.mobile_enabled = on
+        self.settings.save()
+        self._refresh_mobile_view()
+
+    def _mobile_poll(self) -> None:
+        if self._mobile_window is None or not self._mobile_window.winfo_exists():
+            return
+        self._refresh_mobile_view()
+        self._mobile_window.after(2000, self._mobile_poll)
+
+    def _refresh_mobile_view(self) -> None:
+        if self._mobile_window is None or not self._mobile_window.winfo_exists():
+            return
+        devs = self.server.devices
+        if devs.enabled:
+            self._mobile_switch.select()
+        else:
+            self._mobile_switch.deselect()
+        for w in self.mobile_pending.winfo_children():
+            w.destroy()
+        for w in self.mobile_approved.winfo_children():
+            w.destroy()
+        if not devs.enabled:
+            self.lbl_mobile_hint.configure(
+                text="手机连接已关闭。开启后，手机首次访问会出现在“待审核设备”中，同意后才能读取信息与播放控制。"
+            )
+            return
+        self.lbl_mobile_hint.configure(text="")
+        pending = devs.pending()
+        if not pending:
+            ctk.CTkLabel(
+                self.mobile_pending, text="暂无待审核设备",
+                font=self._font_small, text_color=COLORS["dim"],
+            ).pack(anchor="w", padx=6, pady=4)
+        for dev in pending:
+            row = ctk.CTkFrame(self.mobile_pending, fg_color=COLORS["card2"], corner_radius=8)
+            row.pack(fill="x", padx=4, pady=3)
+            ctk.CTkLabel(
+                row, text=f"{dev.get('name', '?')}  ({dev.get('id', '')})",
+                font=self._font_small, text_color=COLORS["text"], anchor="w",
+            ).pack(side="left", padx=10, pady=6)
+            ctk.CTkButton(
+                row, text="同意", width=56, height=26, fg_color=COLORS["accent"],
+                text_color="#14100a", font=self._font_small,
+                command=lambda d=dev: self._device_action("approve", d["id"]),
+            ).pack(side="right", padx=(4, 6), pady=4)
+            ctk.CTkButton(
+                row, text="拒绝", width=56, height=26, fg_color=COLORS["button"],
+                text_color=COLORS["text"], font=self._font_small,
+                command=lambda d=dev: self._device_action("reject", d["id"]),
+            ).pack(side="right", padx=(4, 0), pady=4)
+        approved = devs.approved()
+        if not approved:
+            ctk.CTkLabel(
+                self.mobile_approved, text="暂无已授权设备",
+                font=self._font_small, text_color=COLORS["dim"],
+            ).pack(anchor="w", padx=6, pady=4)
+        for dev in approved:
+            row = ctk.CTkFrame(self.mobile_approved, fg_color=COLORS["card2"], corner_radius=8)
+            row.pack(fill="x", padx=4, pady=3)
+            ctk.CTkLabel(
+                row, text=f"{dev.get('name', '?')}  ({dev.get('id', '')})",
+                font=self._font_small, text_color=COLORS["text"], anchor="w",
+            ).pack(side="left", padx=10, pady=6)
+            ctk.CTkButton(
+                row, text="移除", width=56, height=26, fg_color=COLORS["button"],
+                text_color=COLORS["text"], font=self._font_small,
+                command=lambda d=dev: self._device_action("remove", d["id"]),
+            ).pack(side="right", padx=(4, 6), pady=4)
+
+    def _device_action(self, action: str, device_id: str) -> None:
+        devs = self.server.devices
+        if action == "approve":
+            devs.approve(device_id)
+        elif action == "reject":
+            devs.reject(device_id)
+        elif action == "remove":
+            devs.remove(device_id)
+        self._refresh_mobile_view()
 
     def _open_settings_window(self) -> None:
         if self._settings_window is not None and self._settings_window.winfo_exists():
