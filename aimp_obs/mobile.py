@@ -234,6 +234,8 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   // ---------- lyric rendering with rolling animation ----------
   let snap = null;
+  let anchorMs = 0;   // position_ms at last snapshot
+  let anchorAt = 0;   // device time when that snapshot arrived
   let words = [];
   let activeIdx = -1;
   let curText = '';
@@ -330,6 +332,8 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   function render(s) {
     snap = s;
+    anchorMs = s.position_ms || 0;
+    anchorAt = Date.now();
     el.title.textContent = s.title || (s.connected ? '未知曲目' : '未检测到 AIMP');
     const sub = [s.artist, s.album, s.genre].filter(Boolean).join(' · ');
     el.sub.textContent = sub || (s.connected ? '' : '');
@@ -374,10 +378,11 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   function tick() {
     if (snap) {
-      let pos = snap.position_ms || 0;
+      let pos = anchorMs;
       const dur = snap.duration_ms || 0;
       if (snap.state === 'playing') {
-        pos += Date.now() - Math.round((snap.updated_at || Date.now() / 1000) * 1000);
+        pos += Date.now() - anchorAt;
+        if (pos < 0) pos = 0;
         if (dur > 0 && pos > dur) pos = dur;
       }
       el.bar.style.width = (dur > 0 ? Math.max(0, Math.min(100, pos / dur * 100)) : 0) + '%';
