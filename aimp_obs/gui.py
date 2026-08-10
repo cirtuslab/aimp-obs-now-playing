@@ -560,8 +560,8 @@ class App(ctk.CTk):
         win = ctk.CTkToplevel(self)
         win.title("手机连接")
         self._set_window_icon(win)
-        win.geometry("460x430")
-        win.minsize(420, 380)
+        win.geometry("440x400")
+        win.minsize(400, 340)
         self._mobile_window = win
         devs = self.server.devices
         ip = self._lan_ip()
@@ -570,7 +570,7 @@ class App(ctk.CTk):
             win, text="📱 手机连接", font=self._font_title, text_color=COLORS["text"],
         ).pack(anchor="w", padx=18, pady=(16, 2))
         ctk.CTkLabel(
-            win, text="手机与电脑处于同一 Wi-Fi，用 Safari 打开下方地址；首次连接需在电脑上同意。",
+            win, text="同一 Wi-Fi 下用 Safari 打开下方地址；首次连接需电脑同意。",
             font=self._font_small, text_color=COLORS["dim"], anchor="w", wraplength=420,
         ).pack(anchor="w", padx=18)
 
@@ -596,13 +596,13 @@ class App(ctk.CTk):
         ctk.CTkLabel(
             win, text="待审核设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
         ).pack(anchor="w", padx=18, pady=(12, 2))
-        self.mobile_pending = ctk.CTkScrollableFrame(win, fg_color="transparent", height=92)
+        self.mobile_pending = ctk.CTkScrollableFrame(win, fg_color="transparent", height=64)
         self.mobile_pending.pack(fill="x", padx=12, pady=(0, 4))
 
         ctk.CTkLabel(
             win, text="已授权设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
         ).pack(anchor="w", padx=18, pady=(8, 2))
-        self.mobile_approved = ctk.CTkScrollableFrame(win, fg_color="transparent", height=92)
+        self.mobile_approved = ctk.CTkScrollableFrame(win, fg_color="transparent", height=64)
         self.mobile_approved.pack(fill="x", padx=12, pady=(0, 4))
 
         self.lbl_mobile_hint = ctk.CTkLabel(
@@ -661,7 +661,7 @@ class App(ctk.CTk):
         self.lbl_mobile_url.configure(text=f"http://{ip}:{self.server.port}/m")
         if not devs.enabled:
             self.lbl_mobile_hint.configure(
-                text="手机连接已关闭。开启后，手机首次访问会出现在“待审核设备”中，同意后才能读取信息与播放控制。"
+                text="手机连接已关闭。开启后，首次访问需在电脑端同意。"
             )
             return
         self.lbl_mobile_hint.configure(text="")
