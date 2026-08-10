@@ -378,25 +378,10 @@ __THEME_CSS__
     will-change: transform, opacity, color;
   }
   .lyric-cur .lw, .lyric-next .lw {
-    position: relative;
     font-weight: 400;
-    color: var(--text);
-    transition: color 0.12s ease, font-weight 0.12s ease;
+    transition: color 0.25s ease, font-weight 0.25s ease;
   }
-  .lyric-cur .lw::after, .lyric-next .lw::after {
-    content: attr(data-text);
-    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-    background-image: linear-gradient(90deg, var(--accent), var(--accent2));
-    background-repeat: no-repeat;
-    background-position: left center;
-    background-size: var(--fill, 0%) 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    color: transparent;
-    pointer-events: none;
-  }
-  .lyric-cur .lw.active, .lyric-next .lw.active { font-weight: 800; }
+  .lyric-cur .lw.active, .lyric-next .lw.active { font-weight: 800; color: var(--accent); }
   .lyrics-none { color: var(--dim); font-size: 0.85em; font-family: var(--lyric-font), sans-serif; }
   .lyrics-unsynced { color: var(--dim); font-size: 0.84em; line-height: 1.5; font-family: var(--lyric-font), sans-serif; }
 
@@ -532,8 +517,9 @@ __THEME_CSS__
   let currentWords = [];
   let activeWordIdx = -1;
   let lastSnap = null;
-  let lastAnchorMs = 0;
-  let lastAnchorAt = 0;
+  let displayPos = 0;
+  let lastFrameAt = 0;
+  let lastTrackKey = '';
   const LYR_GAP = 4;
 
   function setContent(node, text, words) {
@@ -541,7 +527,7 @@ __THEME_CSS__
       // Words cover the original line; keep any extra lines (e.g. translation) as plain tail.
       const joined = words.map(w => w.s).join('');
       const tail = text.length > joined.length ? text.slice(joined.length) : '';
-      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '" data-text="' + esc(w.s) + '">' + esc(w.s) + '</span>').join('') + esc(tail);
+      const html = words.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
       if (node.innerHTML !== html) node.innerHTML = html;
     } else {
       if (node.textContent !== text) node.textContent = text;
@@ -633,8 +619,6 @@ __THEME_CSS__
 
   function render(s) {
     lastSnap = s;
-    lastAnchorMs = s.position_ms || 0;
-    lastAnchorAt = Date.now();
     el.panel.classList.toggle('hidden', params.get('hide') === 'stopped' && s.state !== 'playing');
     el.title.textContent = s.title || (s.connected ? '未知曲目' : '未检测到 AIMP');
     const subParts = [s.artist, s.album].filter(Boolean);
@@ -713,34 +697,36 @@ __THEME_CSS__
 
   // Word-level bolding for Enhanced LRC: highlight the word that is playing now.
   function wordHighlightLoop() {
-    if (currentWords.length >= 2) {
-      // smooth position: interpolate from the snapshot anchor (device-clock only)
-      let pos = lastAnchorMs;
-      if (lastSnap && lastSnap.state === 'playing') {
-        pos += Date.now() - lastAnchorAt;
+    if (lastSnap) {
+      // Monotonic position: advance in real time while playing, follow the
+      // server when it is ahead, and only step back on a real seek (>0.8s).
+      const now = Date.now();
+      const serverPos = lastSnap.position_ms || 0;
+      if (lastSnap.track_key !== lastTrackKey) {
+        lastTrackKey = lastSnap.track_key || '';
+        displayPos = serverPos;
+        lastFrameAt = now;
+      } else if (lastSnap.state === 'playing') {
+        if (lastFrameAt > 0) displayPos += now - lastFrameAt;
+        if (serverPos > displayPos) displayPos = serverPos;
+        else if (displayPos - serverPos > 1500) displayPos = serverPos;
         const dur = lastSnap.duration_ms || 0;
-        if (dur > 0 && pos > dur) pos = dur;
+        if (dur > 0 && displayPos > dur) displayPos = dur;
+      } else {
+        displayPos = serverPos;
       }
-      let idx = -1;
-      for (let i = 0; i < currentWords.length; i++) {
-        if (currentWords[i].t <= pos) idx = i;
-        else break;
-      }
-      const spans = topEl.querySelectorAll('.lw');
-      for (let i = 0; i < spans.length; i++) {
-        const sp = spans[i];
-        if (i < idx) {
-          sp.classList.add('active');
-          sp.style.setProperty('--fill', '100%');
-        } else if (i === idx) {
-          sp.classList.add('active');
-          const start = currentWords[i].t;
-          const end = i + 1 < currentWords.length ? currentWords[i + 1].t : start + 600;
-          const p = end > start ? (pos - start) / (end - start) : 1;
-          sp.style.setProperty('--fill', (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '%');
-        } else {
-          sp.classList.remove('active');
-          sp.style.setProperty('--fill', '0%');
+      lastFrameAt = now;
+
+      if (currentWords.length >= 2) {
+        const pos = displayPos;
+        let idx = -1;
+        for (let i = 0; i < currentWords.length; i++) {
+          if (currentWords[i].t <= pos) idx = i;
+          else break;
+        }
+        const spans = topEl.querySelectorAll('.lw');
+        for (let i = 0; i < spans.length; i++) {
+          spans[i].classList.toggle('active', i <= idx);
         }
       }
     }

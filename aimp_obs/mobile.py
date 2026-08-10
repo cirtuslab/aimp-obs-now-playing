@@ -48,21 +48,10 @@ MOBILE_HTML = """<!DOCTYPE html>
   }
   .lyric-cur { font-size:18px; line-height:1.5; font-weight:600; }
   .lyric-cur .lw {
-    position:relative;
     font-weight:400;
-    color:var(--text);
-    transition:color 0.12s ease, font-weight 0.12s ease;
+    transition:color 0.25s ease, font-weight 0.25s ease;
   }
-  .lyric-cur .lw::after {
-    content:attr(data-text);
-    position:absolute; left:0; top:0; width:100%; height:100%;
-    background-image:linear-gradient(90deg, var(--accent), var(--accent2));
-    background-repeat:no-repeat; background-position:left center;
-    background-size:var(--fill, 0%) 100%;
-    -webkit-background-clip:text; background-clip:text;
-    -webkit-text-fill-color:transparent; color:transparent; pointer-events:none;
-  }
-  .lyric-cur .lw.active { font-weight:800; }
+  .lyric-cur .lw.active { font-weight:800; color:var(--accent); }
   .lyric-next { font-size:14px; color:var(--dim); line-height:1.45; }
   .lyrics-none { color:var(--dim); font-size:14px; line-height:1.5; }
   @media (orientation: landscape) {
@@ -269,8 +258,9 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   // ---------- lyric rendering with rolling animation ----------
   let snap = null;
-  let anchorMs = 0;   // position_ms at last snapshot
-  let anchorAt = 0;   // device time when that snapshot arrived
+  let displayPos = 0;
+  let lastFrameAt = 0;
+  let lastTrackKey = '';
   let words = [];
   let activeIdx = -1;
   let curText = '';
@@ -283,7 +273,7 @@ MOBILE_HTML = """<!DOCTYPE html>
     if (wds && wds.length >= 2) {
       const joined = wds.map(w => w.s).join('');
       const tail = text.length > joined.length ? text.slice(joined.length) : '';
-      const html = wds.map((w, i) => '<span class="lw" data-i="' + i + '" data-text="' + esc(w.s) + '">' + esc(w.s) + '</span>').join('') + esc(tail);
+      const html = wds.map((w, i) => '<span class="lw" data-i="' + i + '">' + esc(w.s) + '</span>').join('') + esc(tail);
       if (node.innerHTML !== html) node.innerHTML = html;
     } else {
       if (node.textContent !== text) node.textContent = text;
@@ -367,8 +357,6 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   function render(s) {
     snap = s;
-    anchorMs = s.position_ms || 0;
-    anchorAt = Date.now();
     el.title.textContent = s.title || (s.connected ? '未知曲目' : '未检测到 AIMP');
     const sub = [s.artist, s.album, s.genre].filter(Boolean).join(' · ');
     el.sub.textContent = sub || (s.connected ? '' : '');
@@ -413,13 +401,27 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   function tick() {
     if (snap) {
-      let pos = anchorMs;
-      const dur = snap.duration_ms || 0;
-      if (snap.state === 'playing') {
-        pos += Date.now() - anchorAt;
-        if (pos < 0) pos = 0;
-        if (dur > 0 && pos > dur) pos = dur;
+      // Monotonic position: advance in real time while playing, follow the
+      // server when it is ahead, and only step back on a real seek (>0.8s).
+      const now = Date.now();
+      const serverPos = snap.position_ms || 0;
+      if (snap.track_key !== lastTrackKey) {
+        lastTrackKey = snap.track_key || '';
+        displayPos = serverPos;
+        lastFrameAt = now;
+      } else if (snap.state === 'playing') {
+        if (lastFrameAt > 0) displayPos += now - lastFrameAt;
+        if (serverPos > displayPos) displayPos = serverPos;
+        else if (displayPos - serverPos > 1500) displayPos = serverPos;
+        const dur = snap.duration_ms || 0;
+        if (dur > 0 && displayPos > dur) displayPos = dur;
+      } else {
+        displayPos = serverPos;
       }
+      lastFrameAt = now;
+      const pos = displayPos;
+      const dur = snap.duration_ms || 0;
+
       el.bar.style.width = (dur > 0 ? Math.max(0, Math.min(100, pos / dur * 100)) : 0) + '%';
       el.tCur.textContent = fmt(pos);
       if (words.length >= 2) {
@@ -430,20 +432,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
         const spans = el.cur.querySelectorAll('.lw');
         for (let i = 0; i < spans.length; i++) {
-          const sp = spans[i];
-          if (i < idx) {
-            sp.classList.add('active');
-            sp.style.setProperty('--fill', '100%');
-          } else if (i === idx) {
-            sp.classList.add('active');
-            const start = words[i].t;
-            const end = i + 1 < words.length ? words[i + 1].t : start + 600;
-            const p = end > start ? (pos - start) / (end - start) : 1;
-            sp.style.setProperty('--fill', (Math.max(0, Math.min(1, p)) * 100).toFixed(1) + '%');
-          } else {
-            sp.classList.remove('active');
-            sp.style.setProperty('--fill', '0%');
-          }
+          spans[i].classList.toggle('active', i <= idx);
         }
       }
     }
