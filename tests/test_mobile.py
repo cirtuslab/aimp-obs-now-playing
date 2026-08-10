@@ -36,3 +36,8 @@ def test_mobile_manifest_and_icon():
     assert manifest["start_url"] == "/m"
     png = mobile_icon_png()
     assert png.startswith(b"\x89PNG")
+
+
+def test_mobile_page_keeps_screen_awake():
+    html = render_mobile()
+    assert "wakeLock" in html

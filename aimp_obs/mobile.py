@@ -170,6 +170,27 @@ MOBILE_HTML = """<!DOCTYPE html>
     el.overlay.style.display = 'flex';
   }
 
+  // ---------- keep screen awake (iOS auto-lock) ----------
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch (e) {}
+  }
+  function releaseWakeLock() {
+    if (wakeLock) {
+      try { wakeLock.release(); } catch (e) {}
+      wakeLock = null;
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') requestWakeLock();
+    else releaseWakeLock();
+  });
+
   // ---------- device approval ----------
   async function ensureApproved() {
     if (!deviceId) {
@@ -422,6 +443,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
   function start() {
     applyTheme();
+    requestWakeLock();
     requestAnimationFrame(tick);
     poll();
   }
