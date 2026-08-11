@@ -451,7 +451,7 @@ MOBILE_HTML = """<!DOCTYPE html>
     } catch (e) {
       el.state.textContent = '服务未连接';
     }
-    setTimeout(poll, 1200);
+    setTimeout(poll, 300);
   }
 
   function start() {
