@@ -65,3 +65,26 @@ def test_enhanced_lrc_offset_applies_to_words():
     text = "[00:10.000]<00:10.000>词<00:10.500>组<00:11.000>测<00:11.500>试\n"
     lrc = parse_lrc(text)
     assert [w.start_ms for w in lrc.lines[0].words] == [10000, 10500, 11000, 11500]
+
+
+def test_ncm_http_url_uses_plugin_lyric_file(tmp_path, monkeypatch):
+    from aimp_obs.lyrics import LyricsProvider
+
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    lrc_dir = tmp_path / "aimp_ncm" / "lyrics"
+    lrc_dir.mkdir(parents=True)
+    (lrc_dir / "22719261.lrc").write_text(
+        "[00:10.000]第一次去卢浮宫时\n[00:22.760]なんて\n", encoding="utf-8"
+    )
+    provider = LyricsProvider()
+    lyrics = provider.get("http://127.0.0.1:47777/781962518/22719261.mp3", "卢浮宫", "某人")
+    assert lyrics is not None and lyrics.synced is True
+    assert [ln.text for ln in lyrics.lines] == ["第一次去卢浮宫时", "なんて"]
+
+
+def test_ncm_url_without_plugin_file_falls_back(tmp_path, monkeypatch):
+    from aimp_obs.lyrics import LyricsProvider
+
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    assert LyricsProvider().get("http://127.0.0.1:47777/1/999.mp3", "x", "y") is None
+
