@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import bisect
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# AIMP-NCM (https://github.com/cirtuslab/AIMP-NCM) streaming item URI:
+#   http://127.0.0.1:<port>/<playlist_id>/<song_id>.mp3   (local redirect)
+# The AIMPLyricsSaver plugin stores the fetched NetEase lyric at
+# %TEMP%\aimp_ncm\lyrics\<song_id>.lrc.
+_NCM_HTTP_RE = re.compile(r"^https?://[^/]+/(\d+)/(\d+)\.mp3$")
 
 _TIME_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 _WORD_TIME_RE = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
@@ -202,7 +209,14 @@ class LyricsProvider:
         self._cache: Dict[tuple, Lyrics] = {}
 
     def get(self, filename: str, title: str, artist: str) -> Optional[Lyrics]:
-        if not filename or filename.startswith(("http://", "https://", "rtmp://")):
+        if not filename:
+            return None
+        # AIMP-NCM streaming items: lyrics are fetched and saved by the
+        # AIMPLyricsSaver plugin to %TEMP%\aimp_ncm\lyrics\<song_id>.lrc.
+        ncm = self._get_ncm_lyrics(filename)
+        if ncm is not None:
+            return ncm
+        if filename.startswith(("http://", "https://", "rtmp://")):
             return None
         path = Path(filename)
         candidates = self._candidates(path, title, artist)
@@ -218,6 +232,20 @@ class LyricsProvider:
             except OSError:
                 continue
         return self._load_embedded(path)
+
+    @staticmethod
+    def _get_ncm_lyrics(filename: str) -> Optional[Lyrics]:
+        m = _NCM_HTTP_RE.match(filename)
+        if not m:
+            return None
+        song_id = m.group(2)
+        lrc_path = Path(os.environ.get("TEMP", "")) / "aimp_ncm" / "lyrics" / f"{song_id}.lrc"
+        try:
+            if not lrc_path.is_file():
+                return None
+            return parse_lrc(decode_bytes(lrc_path.read_bytes()))
+        except OSError:
+            return None
 
     @staticmethod
     def _candidates(path: Path, title: str, artist: str) -> List[Path]:
