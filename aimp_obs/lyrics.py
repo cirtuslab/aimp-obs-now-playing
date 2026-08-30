@@ -11,13 +11,19 @@ from typing import Dict, List, Optional
 
 # AIMP-NCM (https://github.com/cirtuslab/AIMP-NCM) streaming item URIs as
 # written into the synced playlist / reported by AIMP's shared memory:
-#   http://127.0.0.1:<port>/<playlist_id>/<song_id>       (current v1.5 format)
-#   http://127.0.0.1:<port>/<playlist_id>/<song_id>.mp3   (older format)
-# Lyrics for these items can live in either cache:
-#   %TEMP%\aimp_ncm\lyric\<song_id>.lrc    (AIMP-NCM v1.5, lyricMode=uslt)
-#   %TEMP%\aimp_ncm\lyrics\<song_id>.lrc   (AIMPLyricsSaver archive)
-_NCM_HTTP_RE = re.compile(r"^https?://[^/]+/(\d+)/(\d+?)(?:\.mp3)?$")
-_NCM_LRC_DIRS = ("lyrics", "lyric")
+#   http://127.0.0.1:<port>/x/<token>/<playlist_id>/<song_id>.mp3   (>= v1.6, token auth)
+#   http://127.0.0.1:<port>/<playlist_id>/<song_id>                 (v1.5, extensionless)
+#   http://127.0.0.1:<port>/<playlist_id>/<song_id>.mp3             (legacy)
+# The token segment is only for proxy auth; the song id (needed for the
+# lyric lookup) is the last numeric segment.
+# Lyrics for these items live in %TEMP%\aimp_ncm\lyric\<song_id>.lrc
+# (AIMP-NCM v1.5+ cache, shared by AIMPLyricsSaver since its archive
+# directory was aligned to the singular form); the old plural "lyrics"
+# directory is kept for backwards compatibility.
+_NCM_HTTP_RE = re.compile(
+    r"^https?://[^/]+/(?:x/[^/]+/)?(\d+)/(\d+?)(?:\.mp3)?$"
+)
+_NCM_LRC_DIRS = ("lyric", "lyrics")
 
 _TIME_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 _WORD_TIME_RE = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
