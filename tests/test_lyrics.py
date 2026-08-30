@@ -82,9 +82,42 @@ def test_ncm_http_url_uses_plugin_lyric_file(tmp_path, monkeypatch):
     assert [ln.text for ln in lyrics.lines] == ["第一次去卢浮宫时", "なんて"]
 
 
+def test_ncm_url_without_extension_uses_ncm_lyric_cache(tmp_path, monkeypatch):
+    # AIMP-NCM v1.5 writes extensionless URLs into the playlist:
+    #   http://127.0.0.1:47777/781962518/1861126812
+    from aimp_obs.lyrics import LyricsProvider
+
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    lrc_dir = tmp_path / "aimp_ncm" / "lyric"
+    lrc_dir.mkdir(parents=True)
+    (lrc_dir / "1861126812.lrc").write_text(
+        "[00:04.310]B*****s hanging low\n[00:04.310]游艇上开瓶酒\n", encoding="utf-8"
+    )
+    lyrics = LyricsProvider().get("http://127.0.0.1:47777/781962518/1861126812", "Edamame", "bbno$")
+    assert lyrics is not None and lyrics.synced is True
+    assert lyrics.lines[0].text == "B*****s hanging low"
+    assert lyrics.lines[1].text == "游艇上开瓶酒"
+
+
+def test_ncm_url_prefers_saver_archive_over_ncm_cache(tmp_path, monkeypatch):
+    from aimp_obs.lyrics import LyricsProvider
+
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    (tmp_path / "aimp_ncm" / "lyric").mkdir(parents=True)
+    (tmp_path / "aimp_ncm" / "lyric" / "123.lrc").write_text(
+        "[00:01.000]from-ncm\n", encoding="utf-8"
+    )
+    (tmp_path / "aimp_ncm" / "lyrics").mkdir(parents=True)
+    (tmp_path / "aimp_ncm" / "lyrics" / "123.lrc").write_text(
+        "[00:01.000]from-saver\n", encoding="utf-8"
+    )
+    lyrics = LyricsProvider().get("http://127.0.0.1:47777/9/123", "x", "y")
+    assert lyrics.lines[0].text == "from-saver"
+
+
 def test_ncm_url_without_plugin_file_falls_back(tmp_path, monkeypatch):
     from aimp_obs.lyrics import LyricsProvider
 
     monkeypatch.setenv("TEMP", str(tmp_path))
-    assert LyricsProvider().get("http://127.0.0.1:47777/1/999.mp3", "x", "y") is None
+    assert LyricsProvider().get("http://127.0.0.1:47777/1/999", "x", "y") is None
 
