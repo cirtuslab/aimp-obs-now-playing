@@ -9,11 +9,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# AIMP-NCM (https://github.com/cirtuslab/AIMP-NCM) streaming item URI:
-#   http://127.0.0.1:<port>/<playlist_id>/<song_id>.mp3   (local redirect)
-# The AIMPLyricsSaver plugin stores the fetched NetEase lyric at
-# %TEMP%\aimp_ncm\lyrics\<song_id>.lrc.
-_NCM_HTTP_RE = re.compile(r"^https?://[^/]+/(\d+)/(\d+)\.mp3$")
+# AIMP-NCM (https://github.com/cirtuslab/AIMP-NCM) streaming item URIs as
+# written into the synced playlist / reported by AIMP's shared memory:
+#   http://127.0.0.1:<port>/<playlist_id>/<song_id>       (current v1.5 format)
+#   http://127.0.0.1:<port>/<playlist_id>/<song_id>.mp3   (older format)
+# Lyrics for these items can live in either cache:
+#   %TEMP%\aimp_ncm\lyric\<song_id>.lrc    (AIMP-NCM v1.5, lyricMode=uslt)
+#   %TEMP%\aimp_ncm\lyrics\<song_id>.lrc   (AIMPLyricsSaver archive)
+_NCM_HTTP_RE = re.compile(r"^https?://[^/]+/(\d+)/(\d+?)(?:\.mp3)?$")
+_NCM_LRC_DIRS = ("lyrics", "lyric")
 
 _TIME_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 _WORD_TIME_RE = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
@@ -239,13 +243,16 @@ class LyricsProvider:
         if not m:
             return None
         song_id = m.group(2)
-        lrc_path = Path(os.environ.get("TEMP", "")) / "aimp_ncm" / "lyrics" / f"{song_id}.lrc"
-        try:
-            if not lrc_path.is_file():
-                return None
-            return parse_lrc(decode_bytes(lrc_path.read_bytes()))
-        except OSError:
-            return None
+        temp = Path(os.environ.get("TEMP", "")) / "aimp_ncm"
+        for sub in _NCM_LRC_DIRS:
+            lrc_path = temp / sub / f"{song_id}.lrc"
+            try:
+                if not lrc_path.is_file():
+                    continue
+                return parse_lrc(decode_bytes(lrc_path.read_bytes()))
+            except OSError:
+                continue
+        return None
 
     @staticmethod
     def _candidates(path: Path, title: str, artist: str) -> List[Path]:
