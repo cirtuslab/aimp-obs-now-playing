@@ -82,8 +82,10 @@ def main(argv=None) -> int:
 
     # When mobile access is enabled, listen on all interfaces so phones can connect.
     host = args.host
+    auto_lan = False
     if devices.enabled and host in ("127.0.0.1", "localhost", "::1"):
         host = "0.0.0.0"
+        auto_lan = True
 
     def _control(action: str) -> bool:
         mapping = {
@@ -115,9 +117,10 @@ def main(argv=None) -> int:
     else:
         print("手机连接未启用（默认关闭，可在 GUI 中开启）", file=sys.stdout)
 
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
+    if auto_lan or args.host not in ("127.0.0.1", "localhost", "::1"):
         print(
-            "警告: 服务监听在非回环地址，局域网内其他设备可以访问 /api/config 修改样式。",
+            "警告: 服务监听在非回环地址，局域网内其他设备可访问覆盖页；"
+            "状态/控制接口仍需已批准设备 token，样式写入仅限本机。",
             file=sys.stderr,
         )
 

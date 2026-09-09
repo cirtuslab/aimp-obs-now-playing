@@ -15,6 +15,7 @@ from .mobile import mobile_icon_png, render_manifest, render_mobile
 from .overlay import OverlayConfig, render_gallery, render_overlay
 
 PROTECTED_GET = {"/api/state", "/cover.png", "/lyrics.lrc", "/api/config"}
+_MAX_BODY_BYTES = 64 * 1024
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -25,7 +26,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self.client_address[0] if self.client_address else "127.0.0.1"
 
     def _is_loopback(self) -> bool:
-        return self._client_ip() in ("127.0.0.1", "::1", "localhost")
+        return self._client_ip() in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1")
 
     def _query(self) -> dict:
         return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -71,6 +72,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _read_json(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
+            if length < 0 or length > _MAX_BODY_BYTES:
+                return {}
             raw = self.rfile.read(length) if length else b"{}"
             data = json.loads(raw.decode("utf-8"))
             return data if isinstance(data, dict) else {}
@@ -118,7 +121,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 q = self._query()
                 device_id = q.get("id", [""])[0]
-                self._send_json(self.server.devices.status(device_id))
+                secret = q.get("secret", [""])[0]
+                self._send_json(self.server.devices.status(device_id, secret))
             elif path in PROTECTED_GET:
                 if not self._auth_ok():
                     self._deny("设备未授权")
@@ -161,7 +165,11 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 data = self._read_json()
                 self._send_json(
-                    self.server.devices.register(data.get("id", ""), data.get("name", ""))
+                    self.server.devices.register(
+                        data.get("id", ""),
+                        data.get("name", ""),
+                        data.get("secret", ""),
+                    )
                 )
             elif path == "/api/control":
                 if not self._mobile_on():
@@ -237,6 +245,11 @@ class OverlayServer:
                 self.port += 1
         if httpd is None:
             return False
+        # Reflect the actually bound port (covers port=0 / auto-increment).
+        try:
+            self.port = int(httpd.server_address[1])
+        except (IndexError, TypeError, ValueError):
+            pass
         httpd.state_hub = self.state_hub
         httpd.cover_store = self.cover_store
         httpd.config = self.config

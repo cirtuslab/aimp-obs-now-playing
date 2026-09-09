@@ -148,13 +148,13 @@ def _parse_enhanced_words(body: str, line_start_ms: Optional[int]) -> List[Lyric
     return words
 
 
-def parse_lrc(text: str) -> Lyrics:
+def parse_lrc(source: str) -> Lyrics:
     synced = False
     metadata: Dict[str, str] = {}
     lines: List[LyricLine] = []
     unsynced: List[str] = []
 
-    for raw_line in text.splitlines():
+    for raw_line in source.splitlines():
         line = raw_line.strip()
         if not line:
             continue
@@ -173,12 +173,12 @@ def parse_lrc(text: str) -> Lyrics:
                 continue
             first_ms = _time_from_tag(tags[0].group(1), tags[0].group(2), tags[0].group(3) or "")
             words = _parse_enhanced_words(body, first_ms)
-            text = _WORD_TIME_RE.sub("", body)
-            stripped = text.strip()
-            if stripped != text:
-                lead = len(text) - len(text.lstrip())
-                trail = len(text) - len(text.rstrip())
-                text = stripped
+            body_text = _WORD_TIME_RE.sub("", body)
+            stripped = body_text.strip()
+            if stripped != body_text:
+                lead = len(body_text) - len(body_text.lstrip())
+                trail = len(body_text) - len(body_text.rstrip())
+                body_text = stripped
                 if words:
                     if lead:
                         w0 = words[0]
@@ -190,7 +190,7 @@ def parse_lrc(text: str) -> Lyrics:
                 time_ms = _time_from_tag(tag.group(1), tag.group(2), tag.group(3) or "")
                 if time_ms is None:
                     continue
-                lines.append(LyricLine(time_ms, text, words=words))
+                lines.append(LyricLine(time_ms, body_text, words=words))
         else:
             unsynced.append(line)
 
@@ -200,12 +200,16 @@ def parse_lrc(text: str) -> Lyrics:
     except ValueError:
         offset = 0
     if offset:
+        seen_word_lists: set = set()
         for ln in lines:
             ln.time_ms += offset
-            for w in ln.words:
-                w.start_ms += offset
+            # Multi-timestamp lines share one words list; apply offset only once.
+            if ln.words and id(ln.words) not in seen_word_lists:
+                seen_word_lists.add(id(ln.words))
+                for w in ln.words:
+                    w.start_ms += offset
     lines.sort(key=lambda ln: ln.time_ms)
-    return Lyrics(synced=synced, lines=lines, unsynced_lines=unsynced, metadata=metadata, raw=text)
+    return Lyrics(synced=synced, lines=lines, unsynced_lines=unsynced, metadata=metadata, raw=source)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -215,8 +219,23 @@ def _sanitize_filename(name: str) -> str:
 class LyricsProvider:
     """Finds lyrics for the currently playing file (sidecar .lrc/.txt or tags)."""
 
+    _MAX_CACHE = 64
+
     def __init__(self) -> None:
         self._cache: Dict[tuple, Lyrics] = {}
+
+    def _cache_put(self, key: tuple, lyrics: Lyrics) -> None:
+        if key in self._cache:
+            self._cache[key] = lyrics
+            return
+        if len(self._cache) >= self._MAX_CACHE:
+            # Drop the oldest inserted entry to keep memory bounded.
+            try:
+                oldest = next(iter(self._cache))
+            except StopIteration:
+                return
+            del self._cache[oldest]
+        self._cache[key] = lyrics
 
     def get(self, filename: str, title: str, artist: str) -> Optional[Lyrics]:
         if not filename:
@@ -237,7 +256,7 @@ class LyricsProvider:
                 stat = cand.stat()
                 key = (str(cand), stat.st_mtime_ns, stat.st_size)
                 if key not in self._cache:
-                    self._cache[key] = parse_lrc(decode_bytes(cand.read_bytes()))
+                    self._cache_put(key, parse_lrc(decode_bytes(cand.read_bytes())))
                 return self._cache[key]
             except OSError:
                 continue
