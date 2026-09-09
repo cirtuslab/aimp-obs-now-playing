@@ -89,8 +89,23 @@ class OverlayConfig:
 
     def update_from_dict(self, data: Dict[str, Any]) -> None:
         for key, value in (data or {}).items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+            if key.startswith("_") or not hasattr(self, key):
+                continue
+            current = getattr(self, key)
+            try:
+                if isinstance(current, bool):
+                    if isinstance(value, bool):
+                        setattr(self, key, value)
+                    elif isinstance(value, str):
+                        setattr(self, key, value.strip().lower() in ("1", "true", "yes", "on"))
+                    elif isinstance(value, (int, float)):
+                        setattr(self, key, bool(value))
+                elif isinstance(current, int):
+                    setattr(self, key, int(value))
+                elif isinstance(current, str):
+                    setattr(self, key, "" if value is None else str(value)[:256])
+            except (TypeError, ValueError):
+                continue
 
 THEME_CSS = """
 body[data-theme="modern"] {

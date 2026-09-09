@@ -629,7 +629,8 @@ class App(ctk.CTk):
         devs.enabled = on
         self.settings.mobile_enabled = on
         self.settings.save()
-        if on and self.server.host in ("127.0.0.1", "localhost", "::1"):
+        loopback = ("127.0.0.1", "localhost", "::1")
+        if on and self.server.host in loopback:
             # Rebind to 0.0.0.0 so phones on the LAN can reach /m.
             self.server.host = "0.0.0.0"
             self.server.stop()
@@ -637,6 +638,11 @@ class App(ctk.CTk):
             if not ok:
                 self.server.host = "127.0.0.1"
                 self.server.start()
+        elif not on and self.server.host not in loopback:
+            # Restore loopback-only binding when mobile access is turned off.
+            self.server.host = "127.0.0.1"
+            self.server.stop()
+            self.server.start()
         self._refresh_mobile_view()
 
     def _mobile_poll(self) -> None:

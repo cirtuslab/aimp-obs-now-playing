@@ -15,6 +15,30 @@ def test_synced_lrc_with_offset_and_translation():
     cur, nxt = lrc.group_at(9600)
     assert cur == "原文\n译文"
     assert nxt == "下一句"
+    # raw must keep the full original LRC source
+    assert lrc.raw == text
+
+
+def test_raw_keeps_full_source_for_synced_lrc():
+    text = (
+        "[ti:完整]\n"
+        "[00:10.000]第一句\n"
+        "[00:20.000]第二句\n"
+        "[00:30.000]第三句\n"
+    )
+    lrc = parse_lrc(text)
+    assert lrc.raw == text
+    assert "第三句" in lrc.raw
+    assert "第一句" in lrc.raw
+
+
+def test_offset_applied_once_to_shared_enhanced_words():
+    # Same words list is shared across multi-timestamp lines; offset must not stack.
+    text = "[offset:1000]\n[00:01.000][00:03.000]<00:01.000>词<00:01.500>组\n"
+    lrc = parse_lrc(text)
+    assert [ln.time_ms for ln in lrc.lines] == [2000, 4000]
+    assert [w.start_ms for w in lrc.lines[0].words] == [2000, 2500]
+    assert [w.start_ms for w in lrc.lines[1].words] == [2000, 2500]
 
 
 def test_unsynced_lrc():

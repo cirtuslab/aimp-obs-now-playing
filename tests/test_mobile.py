@@ -1,4 +1,4 @@
-from aimp_obs.mobile import mobile_icon_png, render_manifest, render_mobile
+from aimp_obs.mobile import MOBILE_THEMES, mobile_icon_png, render_manifest, render_mobile
 
 
 def test_mobile_page_has_core_elements():
@@ -41,3 +41,22 @@ def test_mobile_manifest_and_icon():
 def test_mobile_page_keeps_screen_awake():
     html = render_mobile()
     assert "wakeLock" in html
+
+
+def test_mobile_themes_are_rendered():
+    html = render_mobile()
+    assert "data-theme" in html
+    assert "themeSheet" in html
+    assert "themeBtn" in html
+    # themes dict is injected as JSON (not the __THEMES_JSON__ placeholder)
+    assert "__THEMES_JSON__" not in html
+    for key, meta in MOBILE_THEMES.items():
+        assert f'body[data-theme="{key}"]' in html
+        assert meta["label"] in html
+
+
+def test_mobile_theme_persistence_keys():
+    html = render_mobile()
+    assert "aimp_mobile_theme" in html
+    assert "resolveThemeName" in html
+    assert "localStorage.setItem(LS_THEME" in html
