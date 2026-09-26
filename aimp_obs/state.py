@@ -90,6 +90,7 @@ class StateHub:
         self.lyrics_provider = lyrics_provider or LyricsProvider()
         self.exporter = Exporter(export_dir) if export_dir else None
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._snapshot: Dict = self._disconnected_snapshot()
         self._last_track_key: Optional[str] = None
         self._want_aimp_art = False
@@ -101,6 +102,20 @@ class StateHub:
             return dict(self._snapshot)
 
     def refresh(self) -> Dict:
+        """Refresh the AIMP snapshot.
+
+        Both the poller thread and the GUI thread call this; only one refresh runs at a time, the
+        other caller gets the most recent snapshot instead of duplicating the (expensive) AIMP,
+        cover and lyrics work.
+        """
+        if not self._refresh_lock.acquire(blocking=False):
+            return self.snapshot()
+        try:
+            return self._refresh()
+        finally:
+            self._refresh_lock.release()
+
+    def _refresh(self) -> Dict:
         self.client.refresh_handle()
         if not self.client.connected:
             snap = self._disconnected_snapshot()

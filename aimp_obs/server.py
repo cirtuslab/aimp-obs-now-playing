@@ -14,7 +14,7 @@ from .devices import DeviceManager
 from .mobile import mobile_icon_png, render_manifest, render_mobile
 from .overlay import OverlayConfig, render_gallery, render_overlay
 
-PROTECTED_GET = {"/api/state", "/cover.png", "/lyrics.lrc", "/api/config"}
+PROTECTED_GET = {"/api/state", "/cover.png", "/cover.jpg", "/lyrics.lrc", "/api/config"}
 _MAX_BODY_BYTES = 64 * 1024
 
 
@@ -80,7 +80,21 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _drain_body(self) -> None:
+        """Consume the request body before replying early.
+
+        Windows resets a connection whose handler closes with unread data still buffered, so the
+        client sees WSAECONNABORTED instead of the response we just sent.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if 0 < length <= _MAX_BODY_BYTES:
+                self.rfile.read(length)
+        except Exception:
+            pass
+
     def _deny(self, message: str) -> None:
+        self._drain_body()
         self._send_json({"ok": False, "error": message}, 403)
 
     # --------------------------------------------------------- GET
@@ -132,8 +146,8 @@ class _Handler(BaseHTTPRequestHandler):
                         json.dumps(self.server.state_hub.snapshot(), ensure_ascii=False),
                         "application/json; charset=utf-8",
                     )
-                elif path == "/cover.png":
-                    data, mime, _ts = self.server.cover_store.get()
+                elif path in ("/cover.png", "/cover.jpg"):
+                    data, mime = self.server.cover_store.web_image()
                     self.send_response(200)
                     self.send_header("Content-Type", mime)
                     self.send_header("Content-Length", str(len(data)))
@@ -195,6 +209,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.server.config.update_from_dict(data)
                 self._send_json(self.server.config.to_dict())
             else:
+                self._drain_body()
                 self.send_error(404)
         except (BrokenPipeError, ConnectionResetError):
             pass

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import base64
 import ctypes
 import ctypes.wintypes as wt
-import io
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import ImageTk
 
 from .aimp_api import CMD_NEXT, CMD_PLAYPAUSE, CMD_PREV, CMD_STOP
 from .cover import CoverStore
@@ -31,6 +29,23 @@ MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_NOREPEAT = 0x4000
 VK_L = 0x4C
+
+
+def trim_to_width(text: str, max_w: int, measure) -> str:
+    """Shorten ``text`` until ``text + "…"`` fits ``max_w`` pixels according to ``measure``.
+
+    Binary search, because every ``measure`` call is a Tcl round trip.
+    """
+    if measure(text) <= max_w:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if measure(text[:mid] + "…") <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo] + "…"
 
 TK_THEMES = {
     "modern": {"panel": "#10131b", "border": "#2a2f3d", "accent": "#ff9f19", "text": "#f2f3f7", "dim": "#9aa2b3", "bar_bg": "#2b3140"},
@@ -95,6 +110,8 @@ class FloatingOverlay:
         self._anim_running = False
         self._anim_jobs: list = []
         self._font_measure_cache: dict = {}
+        self._fit_cache: dict = {}
+        self._anim_fonts: dict = {}
         self._lock_hint_job = None
         self._lock_hint_text = ""
         self._hotkey_event = threading.Event()
@@ -400,11 +417,15 @@ class FloatingOverlay:
 
         # lyric slots (explicit font objects so the selected lyric font applies)
         family = self.config.lyric_font or "Segoe UI"
+        lyric_size = max(6, round(14 * s))
+        next_size = max(6, round(11 * s))
+        self._lyric_font_key = (family, lyric_size, "bold")
+        self._lyric_next_font_key = (family, next_size, "normal")
         self._lyric_font_obj = tkfont.Font(
-            root=self.win, family=family, size=max(6, round(14 * s)), weight="bold",
+            root=self.win, family=family, size=lyric_size, weight="bold",
         )
         self._lyric_next_font_obj = tkfont.Font(
-            root=self.win, family=family, size=max(6, round(11 * s)),
+            root=self.win, family=family, size=next_size,
         )
         self._lyric_max_w = w - 2 * round(26 * s) - round(50 * s)
         lx = round(26 * s)
@@ -436,44 +457,59 @@ class FloatingOverlay:
         self.canvas.create_image(x, y, anchor="nw", image=self._photo, tags="cover")
         self.canvas.create_rectangle(x, y, x + size, y + size, outline="", tags="cover")
 
-    def _load_cover(self) -> None:
-        data, _mime, ts = self.cover_store.get()
+    def _load_cover(self) -> bool:
+        """Install the current artwork. Returns False while the decode is still running."""
+        ts = self.cover_store.timestamp
+        if self._cover_ts == ts and self._cover_loaded_scale == self.scale:
+            return False
         size = max(8, round(96 * self.scale))
-        if self._cover_ts == ts and getattr(self, "_cover_loaded_scale", None) == self.scale:
-            return
-        self._cover_ts = ts
-        self._cover_loaded_scale = self.scale
+        img = self.cover_store.rounded_image(
+            size, max(2, round(10 * self.scale)), blocking=False,
+        )
+        if img is None:
+            return False  # keep the previous cover, retry on the next tick
         try:
-            img = Image.open(io.BytesIO(data)).convert("RGBA")
-            img = ImageOps.fit(img, (size, size), Image.LANCZOS)
-            mask = Image.new("L", (size, size), 0)
-            ImageDraw.Draw(mask).rounded_rectangle(
-                [0, 0, size - 1, size - 1], radius=max(2, round(10 * self.scale)), fill=255,
-            )
-            img.putalpha(mask)
-            buf = io.BytesIO()
-            img.save(buf, "PNG")
-            self._photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+            self._photo = ImageTk.PhotoImage(img, master=self.win)
         except Exception:
             self._photo = None
+        self._cover_ts = ts
+        self._cover_loaded_scale = self.scale
+        return True
 
-    def _fit(self, text: str, font, max_w: int) -> str:
+    def _refresh_cover(self) -> None:
+        """Re-render the artwork only (track/cover changed) without rebuilding the window."""
+        if self._load_cover():
+            self._update_cover_item()
+
+    def _measure_font(self, font):
+        if isinstance(font, tuple):
+            f = self._font_measure_cache.get(font)
+            if f is None:
+                if len(self._font_measure_cache) > 64:
+                    self._font_measure_cache.clear()
+                f = tkfont.Font(font=font)
+                self._font_measure_cache[font] = f
+            return f
+        return font
+
+    def _fit(self, text: str, font, max_w: int, key=None) -> str:
+        """Trim ``text`` so it fits ``max_w``; results are memoized per text/font/width."""
         if not text:
             return ""
-        if isinstance(font, tuple):
-            if font not in self._font_measure_cache:
-                self._font_measure_cache[font] = tkfont.Font(font=font)
-            f = self._font_measure_cache[font]
-        else:
-            f = font
-        if f.measure(text) <= max_w:
-            return text
-        while text and f.measure(text + "…") > max_w:
-            text = text[:-1]
-        return text + "…"
+        cache_key = (text, max_w, key if key is not None else font)
+        cached = self._fit_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        out = trim_to_width(text, max_w, self._measure_font(font).measure)
+        if len(self._fit_cache) > 512:
+            self._fit_cache.clear()
+        self._fit_cache[cache_key] = out
+        return out
 
-    def _fit_multiline(self, text: str, font, max_w: int) -> str:
-        return "\n".join(self._fit(line, font, max_w) for line in text.split("\n")[:2])
+    def _fit_multiline(self, text: str, font, max_w: int, key=None) -> str:
+        return "\n".join(
+            self._fit(line, font, max_w, key) for line in text.split("\n")[:2]
+        )
 
     def _layout_lyrics(self, cur_text: str, nxt_text: str = "") -> None:
         s = self.scale
@@ -589,8 +625,10 @@ class FloatingOverlay:
         self._update_lyrics(cur, nxt, colors)
 
     def _update_lyrics(self, cur: str, nxt: str, colors: dict) -> None:
-        cur = self._fit_multiline(cur, self._lyric_font_obj, self._lyric_max_w)
-        nxt = self._fit_multiline(nxt, self._lyric_next_font_obj, self._lyric_max_w)
+        cur = self._fit_multiline(cur, self._lyric_font_obj, self._lyric_max_w, self._lyric_font_key)
+        nxt = self._fit_multiline(
+            nxt, self._lyric_next_font_obj, self._lyric_max_w, self._lyric_next_font_key,
+        )
         self._last_cur = cur
         self._last_nxt = nxt
         if self._anim_running:
@@ -609,6 +647,22 @@ class FloatingOverlay:
         self.canvas.coords(self._lyric_cur_item, self._lyric_x, self._lyric_cur_y)
         self.canvas.coords(self._lyric_next_item, self._lyric_x, self._lyric_next_y)
 
+    def _anim_font(self, size: int) -> tkfont.Font:
+        """Font object for one interpolated lyric size.
+
+        Deliberately never re-configures a font that is already attached to an item: Tk then
+        invalidates its whole font package and every text widget in the process repaints, which
+        made the main window and the context menus flicker for the whole lyric transition.
+        """
+        key = (self.config.lyric_font or "Segoe UI", size)
+        font = self._anim_fonts.get(key)
+        if font is None:
+            if len(self._anim_fonts) > 64:
+                self._anim_fonts.clear()
+            font = tkfont.Font(root=self.win, family=key[0], size=size, weight="bold")
+            self._anim_fonts[key] = font
+        return font
+
     def _animate_lyrics(self, new_cur: str, new_nxt: str) -> None:
         colors = self._colors()
         panel = colors["panel"]
@@ -625,12 +679,6 @@ class FloatingOverlay:
         cur_font_size = max(6, round(14 * self.scale))
         next_font_size = max(6, round(11 * self.scale))
         last_font_size = next_font_size
-        anim_font = None
-        if font_anim:
-            anim_font = tkfont.Font(
-                root=self.win, family=self.config.lyric_font or "Segoe UI",
-                size=next_font_size, weight="bold",
-            )
         temp = self.canvas.create_text(
             self._lyric_x, self._lyric_next_y, anchor="nw",
             text=new_nxt, fill=panel, font=self._lyric_next_font_obj, tags="lyric_temp",
@@ -648,12 +696,13 @@ class FloatingOverlay:
             self.canvas.itemconfig(self._lyric_cur_item, text=old_cur, fill=_lerp_color(text_c, panel, t))
             self.canvas.coords(self._lyric_next_item, self._lyric_x, nxt_y)
             self.canvas.itemconfig(self._lyric_next_item, text=old_nxt, fill=_lerp_color(dim_c, text_c, t))
-            if font_anim and anim_font is not None:
+            if font_anim:
                 font_size = round(next_font_size + (cur_font_size - next_font_size) * t)
                 if font_size != last_font_size:
                     last_font_size = font_size
-                    anim_font.configure(size=font_size)
-                    self.canvas.itemconfig(self._lyric_next_item, font=anim_font)
+                    self.canvas.itemconfig(
+                        self._lyric_next_item, font=self._anim_font(font_size),
+                    )
             self.canvas.coords(temp, self._lyric_x, temp_y)
             self.canvas.itemconfig(temp, fill=_lerp_color(panel, dim_c, t))
             if i == frames:
@@ -708,7 +757,7 @@ class FloatingOverlay:
         self._sync_config()
         snap = demo_snapshot() if getattr(self.config, "demo", False) else self.state_hub.snapshot()
         if snap.get("cover_ts", 0) != self._cover_ts:
-            self._draw()
+            self._refresh_cover()
         self._update_dynamic(snap)
         self.win.after(self.refresh_ms, self._tick)
 

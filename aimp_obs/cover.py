@@ -5,13 +5,19 @@ from __future__ import annotations
 import io
 import threading
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 _FOLDER_ART_NAMES = (
     "cover.png", "cover.jpg", "folder.png", "folder.jpg",
     "front.png", "front.jpg", "album.png", "album.jpg",
     "albumart.png", "albumart.jpg", "AlbumArtSmall.jpg",
 )
+
+# Downscale target kept for repeated re-renders (window zoom, GUI thumbnail).
+_MASTER_PX = 512
+# Size/quality of the copy served to the browser source and the mobile page.
+_WEB_PX = 512
+_WEB_QUALITY = 88
 
 
 def detect_mime(data: bytes) -> str:
@@ -63,6 +69,10 @@ def find_folder_cover(path: Path) -> Optional[Tuple[bytes, str]]:
 
 
 def normalize_to_png(data: bytes) -> Tuple[bytes, str]:
+    mime = detect_mime(data)
+    if not data or mime == "image/png":
+        # Already canonical: re-encoding a 2000px cover costs hundreds of milliseconds.
+        return data, mime
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(data))
@@ -73,7 +83,7 @@ def normalize_to_png(data: bytes) -> Tuple[bytes, str]:
         img.save(buf, "PNG")
         return buf.getvalue(), "image/png"
     except Exception:
-        return data, detect_mime(data)
+        return data, mime
 
 
 def placeholder_cover_png() -> bytes:
@@ -113,6 +123,17 @@ class CoverStore:
         self._mime: str = "image/png"
         self._ts: int = 0
         self._lock = threading.Lock()
+        # Rendering a 1400px cover down to a 96px thumbnail costs tens of milliseconds, so it is
+        # done once per revision/size instead of on every repaint: the Tk thread must stay free
+        # for animations.
+        self._render_lock = threading.RLock()
+        self._master_ts: int = -1
+        self._master = None
+        self._warming: int = -1
+        self._rounded: Dict[tuple, object] = {}
+        self._masks: Dict[tuple, object] = {}
+        self._web_ts: int = -1
+        self._web: Optional[Tuple[bytes, str]] = None
 
     def update(self, data: Optional[bytes], mime: str = "image/png") -> None:
         with self._lock:
@@ -124,6 +145,7 @@ class CoverStore:
                 self._data = placeholder_cover_png()
                 self._mime = "image/png"
                 self._ts += 1
+            self.warm(self._ts, self._data)
 
     def get(self) -> Tuple[bytes, str, int]:
         with self._lock:
@@ -132,6 +154,114 @@ class CoverStore:
     @property
     def timestamp(self) -> int:
         return self._ts
+
+    # ------------------------------------------------------------- render cache
+    def _master_image(self, ts: int, data: bytes):
+        """Decoded RGBA cover, pre-shrunk once per revision so later resizes stay cheap."""
+        with self._render_lock:
+            if self._master_ts == ts:
+                return self._master
+            master = None
+            try:
+                from PIL import Image
+
+                img = Image.open(io.BytesIO(data))
+                img.load()
+                img = img.convert("RGBA")
+                # One box-filter pass instead of a LANCZOS resize: much cheaper, and the
+                # remaining step down to the requested size still happens with LANCZOS.
+                factor = max(1, round(min(img.size) / _MASTER_PX))
+                if factor > 1:
+                    img = img.reduce(factor)
+                master = img
+            except Exception:
+                master = None
+            if self._ts != ts:  # a newer cover arrived while decoding; keep the freshest
+                return self._master
+            self._master_ts = ts
+            self._master = master
+            self._rounded.clear()
+            if self._warming == ts:
+                self._warming = -1
+            return master
+
+    def warm(self, ts: Optional[int] = None, data: Optional[bytes] = None) -> None:
+        """Decode the current cover on a worker thread so the UI thread only has to scale it."""
+        if ts is None or data is None:
+            data, _mime, ts = self.get()
+        if self._master_ts == ts or ts <= 0:
+            return
+        self._warming = ts  # set before the thread starts: the UI must not race it
+        threading.Thread(
+            target=self._master_image, args=(ts, data), daemon=True, name="CoverDecode",
+        ).start()
+
+    def web_image(self) -> Tuple[bytes, str]:
+        """Downscaled JPEG for the browser source and the phone page (cached per revision).
+
+        The raw artwork can be several megabytes while the pages never show it larger than a few
+        hundred pixels; sending the full image costs transfer and client-side decode time.
+        """
+        data, mime, ts = self.get()
+        with self._render_lock:
+            if self._web_ts == ts and self._web is not None:
+                return self._web
+            out: Tuple[bytes, str] = (data, mime)
+            try:
+                from PIL import Image
+
+                img = self._master_image(ts, data)
+                if img is not None:
+                    if max(img.size) > _WEB_PX:
+                        img = img.copy()
+                        img.thumbnail((_WEB_PX, _WEB_PX), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, "JPEG", quality=_WEB_QUALITY, optimize=True)
+                    out = (buf.getvalue(), "image/jpeg")
+            except Exception:
+                out = (data, mime)
+            self._web_ts = ts
+            self._web = out
+            return out
+
+    def rounded_image(self, size: int, radius: int, blocking: bool = True):
+        """RGBA image of the current cover, ``size``x``size`` with rounded corners.
+
+        ``None`` when the artwork cannot be decoded; callers fall back to a plain fill. With
+        ``blocking=False`` it also returns ``None`` while a background decode is still running,
+        so the UI thread can keep showing the previous artwork instead of waiting.
+        """
+        data, _mime, ts = self.get()
+        key = (ts, size, radius)
+        if not blocking and self._master_ts != ts and self._warming == ts:
+            return None  # a decode for this revision is already running; do not race it
+        if not self._render_lock.acquire(blocking=blocking):
+            return None
+        try:
+            if key in self._rounded:
+                return self._rounded[key]
+            img = None
+            try:
+                from PIL import Image, ImageDraw, ImageOps
+
+                master = self._master_image(ts, data)
+                if master is not None:
+                    img = ImageOps.fit(master, (size, size), Image.LANCZOS)
+                    mask = self._masks.get((size, radius))
+                    if mask is None:
+                        mask = Image.new("L", (size, size), 0)
+                        ImageDraw.Draw(mask).rounded_rectangle(
+                            [0, 0, size - 1, size - 1],
+                            radius=max(1, int(radius)), fill=255,
+                        )
+                        self._masks[(size, radius)] = mask
+                    img.putalpha(mask)
+            except Exception:
+                img = None
+            self._rounded[key] = img
+            return img
+        finally:
+            self._render_lock.release()
 
 
 def get_cover_for_file(path: str) -> Optional[Tuple[bytes, str]]:

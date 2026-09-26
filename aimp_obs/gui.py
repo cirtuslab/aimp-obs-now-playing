@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import io
+import ctypes
 import os
 import socket
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -12,7 +13,7 @@ from tkinter import colorchooser, filedialog, font as tkfont, messagebox
 from typing import Optional
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image
 
 from .aimp_api import CMD_NEXT, CMD_PLAYPAUSE, CMD_PREV, CMD_STOP, AimpClient, AlbumArtReceiver
 from .cover import CoverStore
@@ -21,6 +22,7 @@ from .overlay import THEMES, OverlayConfig
 from .paths import icon_path
 from .settings import SettingsStore
 from .state import StateHub, format_time
+from .tray import TrayIcon
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("gold")
@@ -40,6 +42,58 @@ COLORS = {
     "button": "#252b3a",
     "button_hover": "#303850",
 }
+
+
+class _DeviceRow:
+    """Reusable row for the mobile device lists.
+
+    The device list is polled every 2s; rebuilding CTk widgets each time costs hundreds of
+    milliseconds and blanks the list, so rows are created once and updated in place.
+    """
+
+    def __init__(self, master, font) -> None:
+        self.frame = ctk.CTkFrame(master, fg_color=COLORS["card2"], corner_radius=8)
+        self.label = ctk.CTkLabel(
+            self.frame, text="", font=font, text_color=COLORS["text"], anchor="w",
+        )
+        self.label.pack(side="left", padx=10, pady=6)
+        self._font = font
+        self._buttons: list = []
+        self._packed = False
+        self._sig = None
+
+    def _button(self, index: int):
+        while len(self._buttons) <= index:
+            btn = ctk.CTkButton(
+                self.frame, text="", width=56, height=26, font=self._font,
+                fg_color=COLORS["button"], text_color=COLORS["text"],
+            )
+            btn.pack(side="right", padx=(0, 6), pady=4)
+            self._buttons.append(btn)
+        return self._buttons[index]
+
+    def update(self, text: str, actions) -> None:
+        """``actions``: sequence of (label, command, fg_color, text_color), right to left."""
+        sig = (text, tuple((a[0], a[2], a[3]) for a in actions))
+        if sig != self._sig:
+            self._sig = sig
+            self.label.configure(text=text)
+            for i, (label, command, fg, tc) in enumerate(actions):
+                self._button(i).configure(
+                    text=label, command=command, fg_color=fg, text_color=tc,
+                )
+        for btn in self._buttons[len(actions):]:
+            if btn.winfo_manager():
+                btn.pack_forget()
+
+    def show(self, visible: bool) -> None:
+        if visible == self._packed:
+            return
+        self._packed = visible
+        if visible:
+            self.frame.pack(fill="x", padx=4, pady=3)
+        else:
+            self.frame.pack_forget()
 
 
 class App(ctk.CTk):
@@ -68,6 +122,11 @@ class App(ctk.CTk):
         self._settings_ready = False
         self._settings_window = None
         self._mobile_window = None
+        self._pending_rows: list = []
+        self._approved_rows: list = []
+        self.lbl_no_pending = None
+        self.lbl_no_approved = None
+        self._mobile_url_text = ""
         self._floating = None
         self._cover_ts = -1
         self._cover_image: Optional[ctk.CTkImage] = None
@@ -80,6 +139,10 @@ class App(ctk.CTk):
         self._anchor_pos = 0
         self._anchor_wall = 0.0
         self._anchor_playing = False
+        self._tray = None
+        self._in_tray = False
+        self._tray_show_event = threading.Event()
+        self._tray_quit_event = threading.Event()
 
         self.title("AIMP Now Playing → OBS")
         self.geometry("780x600")
@@ -598,12 +661,22 @@ class App(ctk.CTk):
         ).pack(anchor="w", padx=18, pady=(12, 2))
         self.mobile_pending = ctk.CTkScrollableFrame(win, fg_color="transparent", height=64)
         self.mobile_pending.pack(fill="x", padx=12, pady=(0, 4))
+        self.lbl_no_pending = ctk.CTkLabel(
+            self.mobile_pending, text="暂无待审核设备",
+            font=self._font_small, text_color=COLORS["dim"],
+        )
 
         ctk.CTkLabel(
             win, text="已授权设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
         ).pack(anchor="w", padx=18, pady=(8, 2))
         self.mobile_approved = ctk.CTkScrollableFrame(win, fg_color="transparent", height=64)
         self.mobile_approved.pack(fill="x", padx=12, pady=(0, 4))
+        self.lbl_no_approved = ctk.CTkLabel(
+            self.mobile_approved, text="暂无已授权设备",
+            font=self._font_small, text_color=COLORS["dim"],
+        )
+        self._pending_rows = []
+        self._approved_rows = []
 
         self.lbl_mobile_hint = ctk.CTkLabel(
             win, text="", font=self._font_small, text_color=COLORS["dim"],
@@ -622,6 +695,10 @@ class App(ctk.CTk):
         if self._mobile_window is not None:
             self._mobile_window.destroy()
             self._mobile_window = None
+        self._pending_rows = []
+        self._approved_rows = []
+        self.lbl_no_pending = None
+        self.lbl_no_approved = None
 
     def _toggle_mobile(self) -> None:
         devs = self.server.devices
@@ -651,67 +728,79 @@ class App(ctk.CTk):
         self._refresh_mobile_view()
         self._mobile_window.after(2000, self._mobile_poll)
 
+    @staticmethod
+    def _sync_specs(rows: list, specs: list, make_row) -> None:
+        """Grow/reuse ``rows`` to match ``specs`` and hide the leftovers."""
+        for i, (text, actions) in enumerate(specs):
+            if i >= len(rows):
+                rows.append(make_row())
+            rows[i].update(text, actions)
+            rows[i].show(True)
+        for row in rows[len(specs):]:
+            row.show(False)
+
     def _refresh_mobile_view(self) -> None:
         if self._mobile_window is None or not self._mobile_window.winfo_exists():
             return
         devs = self.server.devices
-        if devs.enabled:
-            self._mobile_switch.select()
-        else:
-            self._mobile_switch.deselect()
-        for w in self.mobile_pending.winfo_children():
-            w.destroy()
-        for w in self.mobile_approved.winfo_children():
-            w.destroy()
-        ip = self._lan_ip()
-        self.lbl_mobile_url.configure(text=f"http://{ip}:{self.server.port}/m")
-        if not devs.enabled:
-            self.lbl_mobile_hint.configure(
-                text="手机连接已关闭。开启后，首次访问需在电脑端同意。"
+        if bool(self._mobile_switch.get()) != devs.enabled:
+            if devs.enabled:
+                self._mobile_switch.select()
+            else:
+                self._mobile_switch.deselect()
+        url = f"http://{self._lan_ip()}:{self.server.port}/m"
+        if url != self._mobile_url_text:
+            self._mobile_url_text = url
+            self.lbl_mobile_url.configure(text=url)
+
+        pending = devs.pending() if devs.enabled else []
+        approved = devs.approved() if devs.enabled else []
+        hint = "" if devs.enabled else "手机连接已关闭。开启后，首次访问需在电脑端同意。"
+        if self.lbl_mobile_hint.cget("text") != hint:
+            self.lbl_mobile_hint.configure(text=hint)
+
+        pending_specs = [
+            (
+                f"{dev.get('name', '?')}  ({dev.get('id', '')})",
+                [
+                    ("同意", lambda d=dev: self._device_action("approve", d["id"]),
+                     COLORS["accent"], "#14100a"),
+                    ("拒绝", lambda d=dev: self._device_action("reject", d["id"]),
+                     COLORS["button"], COLORS["text"]),
+                ],
             )
+            for dev in pending
+        ]
+        approved_specs = [
+            (
+                f"{dev.get('name', '?')}  ({dev.get('id', '')})",
+                [
+                    ("移除", lambda d=dev: self._device_action("remove", d["id"]),
+                     COLORS["button"], COLORS["text"]),
+                ],
+            )
+            for dev in approved
+        ]
+        self._sync_specs(
+            self._pending_rows, pending_specs,
+            lambda: _DeviceRow(self.mobile_pending, self._font_small),
+        )
+        self._sync_specs(
+            self._approved_rows, approved_specs,
+            lambda: _DeviceRow(self.mobile_approved, self._font_small),
+        )
+        self._sync_placeholder(self.lbl_no_pending, not pending_specs)
+        self._sync_placeholder(self.lbl_no_approved, not approved_specs)
+
+    @staticmethod
+    def _sync_placeholder(label, visible: bool) -> None:
+        if label is None:
             return
-        self.lbl_mobile_hint.configure(text="")
-        pending = devs.pending()
-        if not pending:
-            ctk.CTkLabel(
-                self.mobile_pending, text="暂无待审核设备",
-                font=self._font_small, text_color=COLORS["dim"],
-            ).pack(anchor="w", padx=6, pady=4)
-        for dev in pending:
-            row = ctk.CTkFrame(self.mobile_pending, fg_color=COLORS["card2"], corner_radius=8)
-            row.pack(fill="x", padx=4, pady=3)
-            ctk.CTkLabel(
-                row, text=f"{dev.get('name', '?')}  ({dev.get('id', '')})",
-                font=self._font_small, text_color=COLORS["text"], anchor="w",
-            ).pack(side="left", padx=10, pady=6)
-            ctk.CTkButton(
-                row, text="同意", width=56, height=26, fg_color=COLORS["accent"],
-                text_color="#14100a", font=self._font_small,
-                command=lambda d=dev: self._device_action("approve", d["id"]),
-            ).pack(side="right", padx=(4, 6), pady=4)
-            ctk.CTkButton(
-                row, text="拒绝", width=56, height=26, fg_color=COLORS["button"],
-                text_color=COLORS["text"], font=self._font_small,
-                command=lambda d=dev: self._device_action("reject", d["id"]),
-            ).pack(side="right", padx=(4, 0), pady=4)
-        approved = devs.approved()
-        if not approved:
-            ctk.CTkLabel(
-                self.mobile_approved, text="暂无已授权设备",
-                font=self._font_small, text_color=COLORS["dim"],
-            ).pack(anchor="w", padx=6, pady=4)
-        for dev in approved:
-            row = ctk.CTkFrame(self.mobile_approved, fg_color=COLORS["card2"], corner_radius=8)
-            row.pack(fill="x", padx=4, pady=3)
-            ctk.CTkLabel(
-                row, text=f"{dev.get('name', '?')}  ({dev.get('id', '')})",
-                font=self._font_small, text_color=COLORS["text"], anchor="w",
-            ).pack(side="left", padx=10, pady=6)
-            ctk.CTkButton(
-                row, text="移除", width=56, height=26, fg_color=COLORS["button"],
-                text_color=COLORS["text"], font=self._font_small,
-                command=lambda d=dev: self._device_action("remove", d["id"]),
-            ).pack(side="right", padx=(4, 6), pady=4)
+        packed = bool(label.winfo_manager())
+        if visible and not packed:
+            label.pack(anchor="w", padx=6, pady=4)
+        elif not visible and packed:
+            label.pack_forget()
 
     def _device_action(self, action: str, device_id: str) -> None:
         devs = self.server.devices
@@ -1151,6 +1240,15 @@ class App(ctk.CTk):
     def _tick(self) -> None:
         if self._closing:
             return
+        if self._tray_show_event.is_set():
+            self._tray_show_event.clear()
+            self._restore_from_tray()
+        if self._tray_quit_event.is_set():
+            self._tray_quit_event.clear()
+            self._on_close()
+            return
+        if self._is_minimized():
+            self._minimize_to_tray()
         snap = self._last_snap
         if snap and snap.get("state") == "playing" and snap.get("duration_ms"):
             est = self._anchor_pos + (time.time() - self._anchor_wall) * 1000
@@ -1199,10 +1297,11 @@ class App(ctk.CTk):
 
         cover_ts = s.get("cover_ts", 0)
         if cover_ts != self._cover_ts:
-            self._cover_ts = cover_ts
-            data, _mime, _ts = self.cover_store.get()
-            self._cover_image = self._rounded_cover(data, 128, 22)
-            self.lbl_cover.configure(image=self._cover_image)
+            image = self._rounded_cover(128, 22, blocking=False)
+            if image is not None:  # artwork still decoding -> retry on the next poll
+                self._cover_ts = cover_ts
+                self._cover_image = image
+                self.lbl_cover.configure(image=image)
 
         cur = s.get("lyrics_current") or ""
         nxt = s.get("lyrics_next") or ""
@@ -1226,22 +1325,68 @@ class App(ctk.CTk):
             if hasattr(self, "btn_service"):
                 self.btn_service.configure(text="▶ 启动服务")
 
-    @staticmethod
-    def _rounded_cover(data: bytes, size: int, radius: int) -> ctk.CTkImage:
-        try:
-            img = Image.open(io.BytesIO(data)).convert("RGBA")
-        except Exception:
+    def _rounded_cover(self, size: int, radius: int, blocking: bool = True):
+        """Rounded cover thumbnail; the store caches decode/resize per cover revision."""
+        img = self.cover_store.rounded_image(size, radius, blocking)
+        if img is None:
+            if not blocking:
+                return None
             img = Image.new("RGBA", (size, size), (36, 42, 56, 255))
-        img = ImageOps.fit(img, (size, size), Image.LANCZOS)
-        mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).rounded_rectangle(
-            [0, 0, size - 1, size - 1], radius=radius, fill=255,
-        )
-        img.putalpha(mask)
         return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+
+    # ---------------------------------------------------------- minimize to tray
+
+    def _is_minimized(self) -> bool:
+        """True while the window is minimised.
+
+        A title-bar (or taskbar) minimise does not surface as Tk's ``<Unmap>`` on Windows, so ask
+        Win32 as well as Tk.
+        """
+        try:
+            if self.state() == "iconic":
+                return True
+        except tk.TclError:
+            return False
+        try:
+            return bool(ctypes.windll.user32.IsIconic(self.winfo_id()))
+        except Exception:
+            return False
+
+    def _minimize_to_tray(self) -> None:
+        if self._closing or self._in_tray or not self._is_minimized():
+            return
+        if not self._ensure_tray().show("已最小化到托盘，双击图标恢复窗口"):
+            return  # no notification area (shell gone): keep the normal minimised window
+        self._in_tray = True
+        self.withdraw()  # also removes the taskbar button
+
+    def _restore_from_tray(self) -> None:
+        if self._tray is not None:
+            self._tray.hide()
+        self._in_tray = False
+        self.deiconify()
+        self.state("normal")
+        self.lift()
+        try:
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _ensure_tray(self) -> TrayIcon:
+        if self._tray is None:
+            self._tray = TrayIcon(
+                "AIMP Now Playing → OBS",
+                icon_path(),
+                on_show=self._tray_show_event.set,
+                on_quit=self._tray_quit_event.set,
+            )
+        return self._tray
 
     def _on_close(self) -> None:
         self._closing = True
+        if self._tray is not None:
+            self._tray.stop()
+            self._tray = None
         self._close_settings_window()
         if self._floating is not None:
             self._floating.close()
