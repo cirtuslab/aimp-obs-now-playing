@@ -147,3 +147,40 @@ def test_health_is_open(server):
 
 def test_max_body_bytes_constant():
     assert _MAX_BODY_BYTES == 64 * 1024
+
+
+def test_cover_endpoint_serves_downscaled_copy(server):
+    """The pages display the cover at a few hundred pixels; the endpoint must not send 4 MB."""
+    import io
+
+    from PIL import Image
+
+    img = Image.effect_noise((1500, 1500), 100).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    raw = buf.getvalue()
+    server.cover_store.update(raw)
+
+    status, body = _get(_url(server, "/cover.png"))
+    assert status == 200
+    assert len(body) < len(raw) / 10
+
+    status, jpg = _get(_url(server, "/cover.jpg"))
+    assert status == 200
+    assert jpg[:3] == b"\xff\xd8\xff"
+
+
+def test_denied_post_still_answers(server):
+    """Unread request bodies must be drained: Windows resets the connection otherwise."""
+    for _ in range(5):
+        status, _body = _post(_url(server, "/api/control"), {"action": "playpause"})
+        assert status == 403
+
+        body = json.dumps({"action": "x" * 200}).encode()
+        req = urllib.request.Request(_url(server, "/api/nope"), data=body, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                assert resp.status == 404
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+            exc.read()
