@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import threading
+import time
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Optional
@@ -17,6 +18,7 @@ from .demo import demo_snapshot
 from .overlay import THEMES, OverlayConfig
 from .paths import icon_path
 from .state import StateHub, format_time
+from .theme import animate_window_alpha, ease_out_cubic, hide_window_from_taskbar
 
 BASE_W, BASE_H = 560, 360
 TRANSPARENT = "#010203"
@@ -119,6 +121,7 @@ class FloatingOverlay:
         self._hotkey_thread: Optional[threading.Thread] = None
 
         self.win = tk.Toplevel(master)
+        self.win.withdraw()
         self.win.title("桌面悬浮窗")
         icon = icon_path()
         if icon.exists():
@@ -132,7 +135,10 @@ class FloatingOverlay:
             self.win.attributes("-transparentcolor", TRANSPARENT)
         except tk.TclError:
             pass
-        self.win.attributes("-alpha", self.opacity)
+        try:
+            self.win.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
         self.win.configure(bg=TRANSPARENT)
         self.canvas = tk.Canvas(self.win, bg=TRANSPARENT, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
@@ -142,7 +148,62 @@ class FloatingOverlay:
         self._set_geometry()
         self._start_hotkey()
         self._draw()
+
+        # Apply WS_EX_TOOLWINDOW before mapping so Windows never allocates a taskbar icon,
+        # even after the main GUI minimizes to the system tray.
+        self.win.update_idletasks()
+        hide_window_from_taskbar(self.win)
+        self.win.deiconify()
+        hide_window_from_taskbar(self.win)
+        self._animate_open()
         self.win.after(100, self._tick)
+
+    def ensure_visible_no_taskbar(self) -> None:
+        """Keep the floating overlay visible and off the taskbar (e.g. after tray minimise)."""
+        if self.closed:
+            return
+        try:
+            if not self.win.winfo_exists():
+                return
+            hide_window_from_taskbar(self.win)
+            self.win.deiconify()
+            self.win.attributes("-topmost", True)
+            self.win.lift()
+        except Exception:
+            pass
+
+    def _animate_open(self) -> None:
+        """Gentle rise-in + opacity fade when opening the floating overlay."""
+        try:
+            target_x = self.win.winfo_x()
+            target_y = self.win.winfo_y()
+            w = round(BASE_W * self.scale)
+            h = round(self._display_h * self.scale)
+        except Exception:
+            animate_window_alpha(self.win, 0.0, self.opacity, duration_ms=190, steps=10)
+            return
+
+        offset = 14
+        duration_s = 0.19
+        t0 = time.perf_counter()
+
+        def _frame() -> None:
+            if self.closed:
+                return
+            try:
+                if not self.win.winfo_exists():
+                    return
+                frac = min(1.0, (time.perf_counter() - t0) / duration_s)
+                t = ease_out_cubic(frac)
+                y = round(target_y + offset * (1.0 - t))
+                self.win.geometry(f"{w}x{h}+{target_x}+{y}")
+                self.win.attributes("-alpha", self.opacity * t)
+            except Exception:
+                return
+            if frac < 1.0:
+                self.win.after(15, _frame)
+
+        _frame()
 
     # ------------------------------------------------------------ helpers
 
@@ -251,7 +312,7 @@ class FloatingOverlay:
         interaction.add_command(label="锁定/解锁拖动 (Ctrl+Shift+L)", command=self.toggle_lock)
         self.menu.add_cascade(label="交互", menu=interaction)
         self.menu.add_separator()
-        self.menu.add_command(label="关闭悬浮窗", command=self.close)
+        self.menu.add_command(label="关闭悬浮窗", command=lambda: self.close(animated=True))
 
     def _player_cmd(self, cmd: int) -> None:
         if self.client is not None:
@@ -761,7 +822,7 @@ class FloatingOverlay:
         self._update_dynamic(snap)
         self.win.after(self.refresh_ms, self._tick)
 
-    def close(self) -> None:
+    def close(self, animated: bool = False) -> None:
         if self.closed:
             return
         self.closed = True
@@ -786,7 +847,19 @@ class FloatingOverlay:
                     ctypes.windll.user32.PostThreadMessageW(tid, WM_QUIT, 0, 0)
             except Exception:
                 pass
-        try:
-            self.win.destroy()
-        except tk.TclError:
-            pass
+
+        def _destroy() -> None:
+            try:
+                if self.win.winfo_exists():
+                    self.win.destroy()
+            except tk.TclError:
+                pass
+
+        if animated:
+            try:
+                cur_alpha = float(self.win.attributes("-alpha"))
+            except Exception:
+                cur_alpha = self.opacity
+            animate_window_alpha(self.win, cur_alpha, 0.0, duration_ms=140, steps=8, on_done=_destroy)
+        else:
+            _destroy()
