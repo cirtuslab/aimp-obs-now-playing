@@ -1,4 +1,10 @@
-"""Modern dark control panel for the AIMP -> OBS tool (CustomTkinter)."""
+"""Compact jewel-like dual-theme animated control panel for AIMP Now Playing -> OBS.
+
+Features a compact 680x440 top-pill studio layout, 60fps single-canvas directional
+crossfade+slide tab transitions (zero widget pop-in), expanding circular radial ripple
+Dark/Light theme switching, breathing cover aura, 7-bar peak-hold equalizer, glowing
+shimmer seek bar, smooth scrolling lyrics, and zero extra dependencies.
+"""
 
 from __future__ import annotations
 
@@ -10,53 +16,71 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, font as tkfont, messagebox
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import customtkinter as ctk
-from PIL import Image
 
-from .aimp_api import CMD_NEXT, CMD_PLAYPAUSE, CMD_PREV, CMD_STOP, AimpClient, AlbumArtReceiver
+from .aimp_api import (
+    CMD_NEXT,
+    CMD_PLAYPAUSE,
+    CMD_PREV,
+    CMD_STOP,
+    PROP_PLAYER_POSITION,
+    AimpClient,
+    AlbumArtReceiver,
+)
 from .cover import CoverStore
 from .demo import demo_cover_bytes, demo_snapshot
 from .overlay import THEMES, OverlayConfig
 from .paths import icon_path
 from .settings import SettingsStore
 from .state import StateHub, format_time
+from .theme import (
+    DARK_PALETTE,
+    LIGHT_PALETTE,
+    OVERLAY_THEME_META,
+    IconCache,
+    animate_window_alpha,
+    apply_native_titlebar_theme,
+    atomic_widget_swap,
+    capture_region_surface,
+    get_palette,
+)
 from .tray import TrayIcon
+from .widgets import (
+    AnimatedProgressBar,
+    CoverStage,
+    EqualizerWidget,
+    LyricsStage,
+    OverlayPreviewCanvas,
+    SegmentedTabBar,
+    StatusPulseDot,
+    ThemeToggleSwitch,
+    ToastBanner,
+    TransitionCurtain,
+)
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("gold")
+# Backwards-compatible alias
+COLORS = DARK_PALETTE
 
-COLORS = {
-    "bg": "#0e1016",
-    "card": "#171b24",
-    "card2": "#1e2330",
-    "border": "#2b3140",
-    "text": "#eef1f8",
-    "dim": "#8d95a8",
-    "accent": "#ff9f19",
-    "accent_hover": "#ffb44d",
-    "green": "#3ddc84",
-    "yellow": "#ffd166",
-    "red": "#ff6b6b",
-    "button": "#252b3a",
-    "button_hover": "#303850",
-}
+
+def T(key: str) -> Tuple[str, str]:
+    """Return a CustomTkinter (light, dark) color pair for a semantic token."""
+    return (LIGHT_PALETTE[key], DARK_PALETTE[key])
 
 
 class _DeviceRow:
-    """Reusable row for the mobile device lists.
-
-    The device list is polled every 2s; rebuilding CTk widgets each time costs hundreds of
-    milliseconds and blanks the list, so rows are created once and updated in place.
-    """
+    """Reusable row for the mobile device lists (updates in place without flicker)."""
 
     def __init__(self, master, font) -> None:
-        self.frame = ctk.CTkFrame(master, fg_color=COLORS["card2"], corner_radius=8)
-        self.label = ctk.CTkLabel(
-            self.frame, text="", font=font, text_color=COLORS["text"], anchor="w",
+        self.frame = ctk.CTkFrame(
+            master, fg_color=T("card_alt"), corner_radius=10,
+            border_width=1, border_color=T("border"),
         )
-        self.label.pack(side="left", padx=10, pady=6)
+        self.label = ctk.CTkLabel(
+            self.frame, text="", font=font, text_color=T("text"), anchor="w",
+        )
+        self.label.pack(side="left", padx=10, pady=6, fill="x", expand=True)
         self._font = font
         self._buttons: list = []
         self._packed = False
@@ -65,22 +89,23 @@ class _DeviceRow:
     def _button(self, index: int):
         while len(self._buttons) <= index:
             btn = ctk.CTkButton(
-                self.frame, text="", width=56, height=26, font=self._font,
-                fg_color=COLORS["button"], text_color=COLORS["text"],
+                self.frame, text="", width=52, height=26, corner_radius=8,
+                font=self._font, fg_color=T("button"), hover_color=T("button_hover"),
+                text_color=T("text"),
             )
-            btn.pack(side="right", padx=(0, 6), pady=4)
+            btn.pack(side="right", padx=(0, 6), pady=5)
             self._buttons.append(btn)
         return self._buttons[index]
 
     def update(self, text: str, actions) -> None:
-        """``actions``: sequence of (label, command, fg_color, text_color), right to left."""
-        sig = (text, tuple((a[0], a[2], a[3]) for a in actions))
+        """``actions``: sequence of (label, command, fg_color, hover_color, text_color)."""
+        sig = (text, tuple((a[0], a[2], a[4]) for a in actions))
         if sig != self._sig:
             self._sig = sig
             self.label.configure(text=text)
-            for i, (label, command, fg, tc) in enumerate(actions):
+            for i, (label, command, fg, hv, tc) in enumerate(actions):
                 self._button(i).configure(
-                    text=label, command=command, fg_color=fg, text_color=tc,
+                    text=label, command=command, fg_color=fg, hover_color=hv, text_color=tc,
                 )
         for btn in self._buttons[len(actions):]:
             if btn.winfo_manager():
@@ -91,12 +116,21 @@ class _DeviceRow:
             return
         self._packed = visible
         if visible:
-            self.frame.pack(fill="x", padx=4, pady=3)
+            self.frame.pack(fill="x", padx=2, pady=3)
         else:
             self.frame.pack_forget()
 
 
 class App(ctk.CTk):
+    """Compact jewel-like AIMP Now Playing -> OBS Studio Control Panel."""
+
+    _NAV_ITEMS = (
+        ("now_playing", "播放"),
+        ("overlay", "样式"),
+        ("obs", "OBS"),
+        ("mobile", "手机"),
+    )
+
     def __init__(
         self,
         client: AimpClient,
@@ -108,6 +142,13 @@ class App(ctk.CTk):
         refresh_ms: int = 300,
         settings: Optional[SettingsStore] = None,
     ) -> None:
+        self.settings = settings or SettingsStore()
+        self._ui_mode = "light" if getattr(self.settings, "ui_theme", "dark") == "light" else "dark"
+        self._palette = get_palette(self._ui_mode)
+
+        ctk.set_appearance_mode(self._ui_mode)
+        ctk.set_default_color_theme("blue")
+
         super().__init__()
         self.client = client
         self.receiver = receiver
@@ -116,55 +157,71 @@ class App(ctk.CTk):
         self.server = server
         self.export_dir = Path(export_dir)
         self.refresh_ms = refresh_ms
-        self.settings = settings or SettingsStore()
+
+        if getattr(self.server, "config", None) is None:
+            self.server.config = OverlayConfig()
 
         self._closing = False
         self._settings_ready = False
-        self._settings_window = None
-        self._mobile_window = None
-        self._pending_rows: list = []
-        self._approved_rows: list = []
-        self.lbl_no_pending = None
-        self.lbl_no_approved = None
-        self._mobile_url_text = ""
         self._floating = None
+        self._font_dialog = None
         self._cover_ts = -1
-        self._cover_image: Optional[ctk.CTkImage] = None
         self._last_snap: Optional[dict] = None
         self._last_ui: dict = {}
         self._last_progress = -1
-        self._last_time_text = ""
+        self._last_time_cur = ""
+        self._last_time_dur = ""
         self._demo_active = False
         self._real_cover: Optional[bytes] = None
         self._anchor_pos = 0
         self._anchor_wall = 0.0
         self._anchor_playing = False
+        self._is_playing_icon = False
         self._tray = None
         self._in_tray = False
         self._tray_show_event = threading.Event()
         self._tray_quit_event = threading.Event()
+        self._active_tab = "now_playing"
+        self._mobile_url_text = ""
+        self._pending_rows: list = []
+        self._approved_rows: list = []
+        self._icons = IconCache()
 
         self.title("AIMP Now Playing → OBS")
-        self.geometry("780x600")
-        self.minsize(720, 460)
-        self.configure(fg_color=COLORS["bg"])
+        self.geometry("680x448")
+        self.minsize(640, 420)
+        self.configure(fg_color=T("bg"))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        try:
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
 
-        self._font = ctk.CTkFont(family="Segoe UI", size=13)
-        self._font_small = ctk.CTkFont(family="Segoe UI", size=12)
-        self._font_badge = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
-        self._font_title = ctk.CTkFont(family="Segoe UI", size=22, weight="bold")
-        self._font_artist = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
-        self._font_meta = ctk.CTkFont(family="Segoe UI", size=12)
-        self._font_lyric = ctk.CTkFont(family="Segoe UI", size=16, weight="bold")
-        self._font_lyric_next = ctk.CTkFont(family="Segoe UI", size=13)
-        self._font_section = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+        # Compact crisp typography
+        self._f_brand = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
+        self._f_title = ctk.CTkFont(family="Segoe UI", size=18, weight="bold")
+        self._f_artist = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+        self._f_section = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+        self._f_body = ctk.CTkFont(family="Segoe UI", size=12)
+        self._f_body_bold = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+        self._f_small = ctk.CTkFont(family="Segoe UI", size=11)
+        self._f_small_bold = ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+        self._f_caption = ctk.CTkFont(family="Segoe UI", size=10)
+        self._f_mono = ctk.CTkFont(family="Consolas", size=11)
 
         self._build_ui()
         self._settings_ready = True
         self._set_window_icon(self)
-        self.after(50, self._tick)
-        self.after(200, self._poll)
+        self.after(15, self._animate_startup)
+        self.after(60, self._tick)
+        self.after(150, self._poll)
+        self.after(1800, self._mobile_poll)
+
+    def _animate_startup(self) -> None:
+        if self._closing:
+            return
+        apply_native_titlebar_theme(self, self._ui_mode == "dark")
+        animate_window_alpha(self, 0.0, 1.0, duration_ms=210, steps=11)
 
     def _set_window_icon(self, win) -> None:
         icon = icon_path()
@@ -174,211 +231,414 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-    # ------------------------------------------------------------- layout
+    # ------------------------------------------------------------------ layout
 
     def _build_ui(self) -> None:
-        pad = {"padx": 22, "pady": (16, 6)}
-        root = ctk.CTkScrollableFrame(self, fg_color=COLORS["bg"], corner_radius=0)
-        root.pack(fill="both", expand=True)
-        self._scroll = root
+        # Root container sits inside self so _root_curtain can capture & ripple over it seamlessly
+        self._root_container = ctk.CTkFrame(self, fg_color=T("bg"), corner_radius=0)
+        self._root_container.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+        self._root_container.grid_rowconfigure(0, weight=0)
+        self._root_container.grid_rowconfigure(1, weight=0)
+        self._root_container.grid_rowconfigure(2, weight=1)
+        self._root_container.grid_columnconfigure(0, weight=1)
 
-        # Header
-        header = ctk.CTkFrame(root, fg_color="transparent")
-        header.pack(fill="x", **pad)
-        ctk.CTkLabel(
-            header, text="AIMP Now Playing", font=self._font_title,
-            text_color=COLORS["text"], anchor="w",
-        ).pack(side="left")
+        self._build_header(self._root_container)
+
+        # Hairline divider under top bar
+        ctk.CTkFrame(self._root_container, height=1, fg_color=T("border"), corner_radius=0).grid(
+            row=1, column=0, sticky="ew",
+        )
+
+        # Stacked workspace container (all 4 pages permanently pre-mounted)
+        self._workspace = ctk.CTkFrame(self._root_container, fg_color=T("bg"), corner_radius=0)
+        self._workspace.grid(row=2, column=0, sticky="nsew")
+
+        self._pages: Dict[str, ctk.CTkBaseClass] = {}
+        self._pages["now_playing"] = self._build_now_playing_page(self._workspace)
+        self._pages["overlay"] = self._build_overlay_page(self._workspace)
+        self._pages["obs"] = self._build_obs_page(self._workspace)
+        self._pages["mobile"] = self._build_mobile_page(self._workspace)
+
+        for page in self._pages.values():
+            page.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+
+        # Single-canvas floating DWM transition curtain (zero widget pop-in!)
+        self._curtain = TransitionCurtain(self, bg=self._palette["bg"])
+        self._toast = ToastBanner(self._workspace, self._palette)
+
+        self._switch_tab("now_playing", instant=True)
+        self._style_refresh()
+        self._refresh_mobile_view()
+        self._sync_quick_dock()
+
+    # ------------------------------------------------------------ Top Header
+
+    def _build_header(self, parent) -> None:
+        hdr = ctk.CTkFrame(parent, height=52, fg_color=T("sidebar"), corner_radius=0)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_propagate(False)
+        hdr.grid_columnconfigure(0, weight=1)
+        hdr.grid_columnconfigure(1, weight=0)
+        hdr.grid_columnconfigure(2, weight=1)
+        self._header = hdr
+
+        # Left: Brand + Live Pulse Status
+        left = ctk.CTkFrame(hdr, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="w", padx=(14, 6), pady=9)
+        brand_ico = self._icons.get("brand", DARK_PALETTE["accent"], LIGHT_PALETTE["accent"], 22)
+        ctk.CTkLabel(left, text="", image=brand_ico, width=22).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(left, text="AIMP", font=self._f_brand, text_color=T("text")).pack(side="left", padx=(0, 8))
+
+        pill = ctk.CTkFrame(
+            left, fg_color=T("card_alt"), corner_radius=10,
+            border_width=1, border_color=T("border"),
+        )
+        pill.pack(side="left")
+        self._status_dot = StatusPulseDot(pill, self._palette, bg_key="card_alt")
+        self._status_dot.pack(side="left", padx=(7, 4), pady=4)
         self.lbl_badge = ctk.CTkLabel(
-            header, text="● 未连接", font=self._font_badge,
-            text_color=COLORS["red"],
+            pill, text="未连接", font=self._f_caption, text_color=T("danger"),
         )
-        self.lbl_badge.pack(side="right")
+        self.lbl_badge.pack(side="left", padx=(0, 8), pady=3)
 
-        # Now playing card
-        card = ctk.CTkFrame(
-            root, fg_color=COLORS["card"], corner_radius=20,
-            border_width=1, border_color=COLORS["border"],
+        # Center: Gliding Segmented Pill Tab Bar
+        self._tab_bar = SegmentedTabBar(
+            hdr, self._NAV_ITEMS, self._palette,
+            on_select=self._switch_tab, width=240, height=32, bg_key="sidebar",
         )
-        card.pack(fill="x", padx=22, pady=(6, 10))
-        card.grid_columnconfigure(1, weight=1)
+        self._tab_bar.grid(row=0, column=1, pady=10)
 
-        self.lbl_cover = ctk.CTkLabel(card, text="", width=128, height=128)
-        self.lbl_cover.grid(row=0, column=0, rowspan=4, padx=(18, 18), pady=18)
+        # Right: Compact Quick Dock (Float, Demo, Moon/Sun Theme Switch)
+        right = ctk.CTkFrame(hdr, fg_color="transparent")
+        right.grid(row=0, column=2, sticky="e", padx=(6, 14), pady=9)
 
+        self._theme_switch = ThemeToggleSwitch(
+            right,
+            is_light=(self._ui_mode == "light"),
+            palette=self._palette,
+            on_toggle=self._on_theme_toggle,
+            bg_key="sidebar",
+        )
+        self._theme_switch.pack(side="right", padx=(6, 0))
+
+        self._ico_demo_idle = self._icons.get("sparkles", DARK_PALETTE["text_secondary"], LIGHT_PALETTE["text_secondary"], 14)
+        self._ico_demo_on = self._icons.get("sparkles", DARK_PALETTE["accent"], LIGHT_PALETTE["accent"], 14)
+        self.btn_demo_quick = ctk.CTkButton(
+            right, text="演示", image=self._ico_demo_idle, compound="left",
+            width=58, height=28, corner_radius=9, font=self._f_caption,
+            fg_color=T("card_alt"), hover_color=T("card_hover"),
+            border_width=1, border_color=T("border"), text_color=T("text_secondary"),
+            command=self._toggle_demo_quick,
+        )
+        self.btn_demo_quick.pack(side="right", padx=(4, 0))
+
+        self._ico_float_idle = self._icons.get("float", DARK_PALETTE["text_secondary"], LIGHT_PALETTE["text_secondary"], 14)
+        self._ico_float_on = self._icons.get("float", DARK_PALETTE["accent"], LIGHT_PALETTE["accent"], 14)
+        self.btn_floating = ctk.CTkButton(
+            right, text="悬浮窗", image=self._ico_float_idle, compound="left",
+            width=68, height=28, corner_radius=9, font=self._f_caption,
+            fg_color=T("card_alt"), hover_color=T("card_hover"),
+            border_width=1, border_color=T("border"), text_color=T("text_secondary"),
+            command=self._toggle_floating,
+        )
+        self.btn_floating.pack(side="right", padx=(0, 2))
+
+    # ------------------------------------------------- Tab Switch (60fps!)
+
+    @staticmethod
+    def _page_host(page):
+        return getattr(page, "_parent_frame", page)
+
+    def _switch_tab(self, key: str, instant: bool = False) -> None:
+        if key not in self._pages:
+            return
+        if not instant and key == self._active_tab:
+            return
+
+        keys = [item[0] for item in self._NAV_ITEMS]
+        old_idx = keys.index(self._active_tab) if self._active_tab in keys else 0
+        new_idx = keys.index(key) if key in keys else 0
+        direction = 1 if new_idx >= old_idx else -1
+        self._active_tab = key
+        self._tab_bar.set_active(key, instant=instant)
+
+        target_host = self._page_host(self._pages[key])
+
+        if instant:
+            target_host.lift()
+            if self._toast._visible:
+                self._toast._frame.lift()
+            return
+
+        # Pre-update target page data before capturing its offscreen bitmap
+        if key == "overlay":
+            self._overlay_preview.update_preview(self.server.config, self._last_snap)
+        elif key == "mobile":
+            self._refresh_mobile_view()
+
+        # Freeze workspace behind native Win32 GDI overlay while target paints offscreen,
+        # then run hardware-fast 60+ FPS AlphaBlend slide+crossfade (<1ms/frame)!
+        surf_old = capture_region_surface(self, self._workspace)
+        if surf_old is not None and self._curtain.show_static(surf_old, self._workspace, bg=self._palette["bg"]):
+            target_host.lift()
+            if self._toast._visible:
+                self._toast._frame.lift()
+            self.update()
+            surf_new = capture_region_surface(self, self._workspace)
+            if surf_new is not None:
+                def _after_slide() -> None:
+                    if self._toast._visible:
+                        self._toast._frame.lift()
+
+                self._curtain.play_slide_crossfade(
+                    surf_old, surf_new, direction, self._palette["bg"],
+                    duration_ms=230, on_done=_after_slide,
+                )
+                return
+            self._curtain.hide()
+        elif surf_old is not None:
+            surf_old.release()
+
+        # Graceful fallback if offscreen capture is unavailable
+        def _fallback_lift() -> None:
+            target_host.lift()
+            if self._toast._visible:
+                self._toast._frame.lift()
+
+        atomic_widget_swap(self._workspace, _fallback_lift)
+
+    # ------------------------------------------------- Page 1: Now Playing
+
+    def _build_now_playing_page(self, parent) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(parent, fg_color=T("bg"), corner_radius=0)
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(1, weight=1)
+
+        # Hero Player Card
+        hero = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=18,
+            border_width=1, border_color=T("border"),
+        )
+        hero.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 10))
+        hero.grid_columnconfigure(1, weight=1)
+
+        # Left: Breathing ambient CoverStage
+        self._cover_stage = CoverStage(hero, self._palette, cover_size=118, pad=20, radius=18)
+        self._cover_stage.grid(row=0, column=0, padx=(8, 4), pady=8)
+
+        # Right: Visualizer + Metadata + Shimmer Progress + Transport
+        info = ctk.CTkFrame(hero, fg_color="transparent")
+        info.grid(row=0, column=1, sticky="nsew", padx=(4, 16), pady=12)
+        info.grid_columnconfigure(0, weight=1)
+
+        # Top row: 7-bar Equalizer + Meta + Quick Copy / Service pills
+        top_row = ctk.CTkFrame(info, fg_color="transparent")
+        top_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self._equalizer = EqualizerWidget(top_row, self._palette, width=46, height=16)
+        self._equalizer.pack(side="left", padx=(0, 8))
+        self.lbl_meta = ctk.CTkLabel(
+            top_row, text="AIMP Remote API", font=self._f_caption,
+            text_color=T("text_muted"), anchor="w",
+        )
+        self.lbl_meta.pack(side="left")
+
+        ico_copy = self._icons.get("copy", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 12)
+        ctk.CTkButton(
+            top_row, text=" OBS", image=ico_copy, compound="left",
+            width=54, height=24, corner_radius=7, font=self._f_caption,
+            fg_color=T("card_alt"), hover_color=T("card_hover"),
+            border_width=1, border_color=T("border"), text_color=T("text"),
+            command=self._copy_url,
+        ).pack(side="right", padx=(6, 0))
+
+        self._ico_power_on = self._icons.get("power", DARK_PALETTE["success"], LIGHT_PALETTE["success"], 12)
+        self._ico_power_off = self._icons.get("power", DARK_PALETTE["text_muted"], LIGHT_PALETTE["text_muted"], 12)
+        self.btn_service_pill = ctk.CTkButton(
+            top_row, text=" :8765", image=self._ico_power_on, compound="left",
+            width=66, height=24, corner_radius=7, font=self._f_caption,
+            fg_color=T("success_soft"), hover_color=T("card_hover"),
+            border_width=1, border_color=T("border"), text_color=T("success"),
+            command=self._toggle_server,
+        )
+        self.btn_service_pill.pack(side="right")
+
+        # Title & Artist
         self.lbl_title = ctk.CTkLabel(
-            card, text="—", font=self._font_title, text_color=COLORS["text"],
-            anchor="w", wraplength=500,
+            info, text="未在播放", font=self._f_title, text_color=T("text"),
+            anchor="w", justify="left", wraplength=430,
         )
-        self.lbl_title.grid(row=0, column=1, sticky="ew", pady=(16, 0))
+        self.lbl_title.grid(row=1, column=0, sticky="ew")
 
         self.lbl_artist = ctk.CTkLabel(
-            card, text="—", font=self._font_artist, text_color=COLORS["accent"],
-            anchor="w", wraplength=500,
+            info, text="请启动 AIMP，或点击右上角「演示」预览",
+            font=self._f_artist, text_color=T("accent"),
+            anchor="w", justify="left", wraplength=430,
         )
-        self.lbl_artist.grid(row=1, column=1, sticky="ew", pady=(2, 0))
+        self.lbl_artist.grid(row=2, column=0, sticky="ew", pady=(1, 8))
 
-        self.lbl_meta = ctk.CTkLabel(
-            card, text="", font=self._font_meta, text_color=COLORS["dim"],
-            anchor="w", wraplength=500,
+        # Glowing Shimmer Seekable Progress Bar
+        self._progress_bar = AnimatedProgressBar(
+            info, self._palette, on_seek=self._on_seek, bg_key="card",
         )
-        self.lbl_meta.grid(row=2, column=1, sticky="ew", pady=(2, 0))
+        self._progress_bar.grid(row=3, column=0, sticky="ew")
 
-        self.lbl_aimp = ctk.CTkLabel(
-            card, text="", font=self._font_small, text_color=COLORS["dim"],
-            anchor="w",
-        )
-        self.lbl_aimp.grid(row=3, column=1, sticky="ew", pady=(2, 14))
+        # Bottom bar: Time + Centered/Left Transport Controls + AIMP version
+        ctrl_row = ctk.CTkFrame(info, fg_color="transparent")
+        ctrl_row.grid(row=4, column=0, sticky="ew", pady=(4, 0))
 
-        # Progress
-        prog = ctk.CTkFrame(root, fg_color="transparent")
-        prog.pack(fill="x", padx=22, pady=(0, 4))
-        self.progress = ctk.CTkProgressBar(
-            prog, height=8, corner_radius=4,
-            fg_color=COLORS["button"], progress_color=COLORS["accent"],
-        )
-        self.progress.pack(fill="x")
-        self.progress.set(0)
-        times = ctk.CTkFrame(root, fg_color="transparent")
-        times.pack(fill="x", padx=22, pady=(4, 8))
-        self.lbl_time = ctk.CTkLabel(
-            times, text="0:00 / 0:00", font=self._font_small,
-            text_color=COLORS["dim"], anchor="w",
-        )
-        self.lbl_time.pack(side="left")
-        self.lbl_server_state = ctk.CTkLabel(
-            times, text="服务未启动", font=self._font_small,
-            text_color=COLORS["dim"], anchor="e",
-        )
-        self.lbl_server_state.pack(side="right")
+        self._ico_prev = self._icons.get("prev", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 14)
+        self._ico_next = self._icons.get("next", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 14)
+        self._ico_stop = self._icons.get("stop", DARK_PALETTE["text_secondary"], LIGHT_PALETTE["text_secondary"], 12)
+        self._ico_play = self._icons.get("play", DARK_PALETTE["accent_fg"], LIGHT_PALETTE["accent_fg"], 15)
+        self._ico_pause = self._icons.get("pause", DARK_PALETTE["accent_fg"], LIGHT_PALETTE["accent_fg"], 15)
 
-        # Lyrics card
-        lyr = ctk.CTkFrame(
-            root, fg_color=COLORS["card"], corner_radius=20,
-            border_width=1, border_color=COLORS["border"],
-        )
-        lyr.pack(fill="x", padx=22, pady=(2, 10))
-        ctk.CTkLabel(
-            lyr, text="歌词", font=self._font_section,
-            text_color=COLORS["dim"], anchor="w",
-        ).pack(anchor="w", padx=18, pady=(14, 2))
-        self.lbl_lyric = ctk.CTkLabel(
-            lyr, text="暂无歌词", font=self._font_lyric,
-            text_color=COLORS["text"], anchor="w", justify="left",
-            wraplength=690,
-        )
-        self.lbl_lyric.pack(anchor="w", padx=18, pady=(2, 2))
-        self.lbl_lyric_next = ctk.CTkLabel(
-            lyr, text="", font=self._font_lyric_next,
-            text_color=COLORS["dim"], anchor="w", justify="left",
-            wraplength=690,
-        )
-        self.lbl_lyric_next.pack(anchor="w", padx=18, pady=(2, 14))
-
-        # Controls
-        ctrl = ctk.CTkFrame(root, fg_color="transparent")
-        ctrl.pack(fill="x", padx=22, pady=(0, 10))
-        btn_cfg = dict(width=74, height=42, corner_radius=14)
         self.btn_prev = ctk.CTkButton(
-            ctrl, text="⏮ 上一首", command=lambda: self._cmd(CMD_PREV),
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"], font=self._font, **btn_cfg,
+            ctrl_row, text="", image=self._ico_prev, width=34, height=34, corner_radius=17,
+            fg_color=T("button"), hover_color=T("button_hover"),
+            command=lambda: self._cmd(CMD_PREV),
         )
-        self.btn_prev.pack(side="left", padx=(0, 8))
+        self.btn_prev.pack(side="left", padx=(0, 7))
+
         self.btn_play = ctk.CTkButton(
-            ctrl, text="⏸ 播放/暂停", command=lambda: self._cmd(CMD_PLAYPAUSE),
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            text_color="#14100a", font=self._font_bold(), **btn_cfg,
+            ctrl_row, text="", image=self._ico_play, width=44, height=36, corner_radius=18,
+            fg_color=T("accent"), hover_color=T("accent_hover"),
+            command=lambda: self._cmd(CMD_PLAYPAUSE),
         )
-        self.btn_play.pack(side="left", padx=(0, 8))
-        self.btn_stop = ctk.CTkButton(
-            ctrl, text="⏹ 停止", command=lambda: self._cmd(CMD_STOP),
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"], font=self._font, **btn_cfg,
-        )
-        self.btn_stop.pack(side="left", padx=(0, 8))
+        self.btn_play.pack(side="left", padx=(0, 7))
+
         self.btn_next = ctk.CTkButton(
-            ctrl, text="⏭ 下一首", command=lambda: self._cmd(CMD_NEXT),
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"], font=self._font, **btn_cfg,
+            ctrl_row, text="", image=self._ico_next, width=34, height=34, corner_radius=17,
+            fg_color=T("button"), hover_color=T("button_hover"),
+            command=lambda: self._cmd(CMD_NEXT),
         )
-        self.btn_next.pack(side="left")
+        self.btn_next.pack(side="left", padx=(0, 7))
 
-        # Settings entry button (style + OBS moved to a secondary window)
-        settings_row = ctk.CTkFrame(root, fg_color="transparent")
-        settings_row.pack(fill="x", padx=22, pady=(0, 12))
-        self.btn_settings = ctk.CTkButton(
-            settings_row, text="⚙ 覆盖页样式 / OBS 设置", height=46, corner_radius=14,
-            command=self._open_settings_window, font=self._font_bold(),
-            fg_color=COLORS["card2"], hover_color=COLORS["button_hover"],
-            border_width=1, border_color=COLORS["accent"], text_color=COLORS["text"],
+        self.btn_stop = ctk.CTkButton(
+            ctrl_row, text="", image=self._ico_stop, width=30, height=30, corner_radius=15,
+            fg_color="transparent", hover_color=T("button"),
+            border_width=1, border_color=T("border"),
+            command=lambda: self._cmd(CMD_STOP),
         )
-        self.btn_settings.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.btn_floating = ctk.CTkButton(
-            settings_row, text="🖥 桌面悬浮窗", height=46, corner_radius=14,
-            command=self._toggle_floating, font=self._font_bold(),
-            fg_color=COLORS["card2"], hover_color=COLORS["button_hover"],
-            border_width=1, border_color=COLORS["accent"], text_color=COLORS["text"],
-        )
-        self.btn_floating.pack(side="left", fill="x", expand=True, padx=(6, 0))
-        self.btn_service = ctk.CTkButton(
-            settings_row, text="▶ 启动服务", height=46, corner_radius=14,
-            command=self._toggle_server, font=self._font_bold(),
-            fg_color=COLORS["card2"], hover_color=COLORS["button_hover"],
-            border_width=1, border_color=COLORS["accent"], text_color=COLORS["text"],
-        )
-        self.btn_service.pack(side="left", fill="x", expand=True, padx=(6, 0))
-        self.btn_mobile = ctk.CTkButton(
-            settings_row, text="📱 手机连接", height=46, corner_radius=14,
-            command=self._open_mobile_window, font=self._font_bold(),
-            fg_color=COLORS["card2"], hover_color=COLORS["button_hover"],
-            border_width=1, border_color=COLORS["accent"], text_color=COLORS["text"],
-        )
-        self.btn_mobile.pack(side="left", fill="x", expand=True, padx=(6, 0))
-        self.lbl_hint_main = ctk.CTkLabel(
-            root, text="样式、OBS 设置和桌面悬浮窗可点击上方按钮打开。",
-            font=self._font_small, text_color=COLORS["dim"], anchor="w",
-        )
-        self.lbl_hint_main.pack(fill="x", padx=22, pady=(0, 14))
+        self.btn_stop.pack(side="left")
 
-    # ------------------------------------------------- settings window
-
-    def _build_style_panel(self, parent) -> None:
-        if getattr(self.server, "config", None) is None:
-            self.server.config = OverlayConfig()
-        ctk.CTkLabel(
-            parent, text="覆盖页样式（OBS 浏览器源约 1-2 秒自动同步）",
-            font=self._font_section, text_color=COLORS["dim"], anchor="w",
-        ).pack(anchor="w", padx=6, pady=(2, 6))
-
-        # theme row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(0, 6))
-        ctk.CTkLabel(r, text="主题", width=58, anchor="w", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
-        self._theme_labels = [meta["label"] for meta in THEMES.values()]
-        self._theme_keys = {meta["label"]: key for key, meta in THEMES.items()}
-        self._theme_combo = ctk.CTkComboBox(
-            r, values=self._theme_labels, command=self._on_theme,
-            width=210, height=32, corner_radius=10,
-            fg_color=COLORS["card2"], border_color=COLORS["border"],
-            button_color=COLORS["accent"], button_hover_color=COLORS["accent_hover"],
-            dropdown_fg_color=COLORS["card2"], dropdown_hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"], font=self._font_small,
+        self.lbl_time_dur = ctk.CTkLabel(
+            ctrl_row, text="0:00", font=self._f_mono, text_color=T("text_muted"),
         )
-        self._theme_combo.pack(side="left", padx=(6, 10))
+        self.lbl_time_dur.pack(side="right")
+        ctk.CTkLabel(ctrl_row, text=" / ", font=self._f_mono, text_color=T("text_muted")).pack(side="right")
+        self.lbl_time_cur = ctk.CTkLabel(
+            ctrl_row, text="0:00", font=self._f_mono, text_color=T("text_secondary"),
+        )
+        self.lbl_time_cur.pack(side="right")
+
+        # Compact Lyrics Theater Card
+        lyr_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=18,
+            border_width=1, border_color=T("border"),
+        )
+        lyr_card.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 14))
+        lyr_card.grid_columnconfigure(0, weight=1)
+        lyr_card.grid_rowconfigure(1, weight=1)
+
+        lyr_hdr = ctk.CTkFrame(lyr_card, fg_color="transparent")
+        lyr_hdr.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 2))
+        ctk.CTkLabel(lyr_hdr, text="实时歌词", font=self._f_section, text_color=T("text_secondary")).pack(side="left")
+        self.lbl_lyric_badge = ctk.CTkLabel(
+            lyr_hdr, text="等待歌词", font=self._f_caption,
+            text_color=T("text_muted"), fg_color=T("card_alt"), corner_radius=6,
+            padx=7, pady=1,
+        )
+        self.lbl_lyric_badge.pack(side="left", padx=(8, 0))
         ctk.CTkButton(
-            r, text="重置样式", width=90, height=32, corner_radius=10,
-            command=self._reset_style, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
-        ).pack(side="left")
+            lyr_hdr, text="样式设置 →", height=22, width=76, corner_radius=6,
+            font=self._f_caption, fg_color="transparent", hover_color=T("card_alt"),
+            text_color=T("accent"), command=lambda: self._switch_tab("overlay"),
+        ).pack(side="right")
 
-        # position row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(0, 6))
-        ctk.CTkLabel(r, text="位置", width=58, anchor="w", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
-        grid = ctk.CTkFrame(r, fg_color="transparent")
-        grid.pack(side="left", padx=(6, 0))
-        self._pos_buttons = {}
+        self._lyrics_stage = LyricsStage(lyr_card, self._palette, height=96)
+        self._lyrics_stage.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 10))
+
+        return page
+
+    # ----------------------------------------------- Page 2: Overlay Studio
+
+    def _build_overlay_page(self, parent) -> ctk.CTkScrollableFrame:
+        page = ctk.CTkScrollableFrame(parent, fg_color=T("bg"), corner_radius=0)
+
+        # Compact top bar
+        top = ctk.CTkFrame(page, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(10, 8))
+        ctk.CTkLabel(top, text="覆盖页样式", font=self._f_brand, text_color=T("text")).pack(side="left")
+        ctk.CTkLabel(top, text="· 实时同步至 OBS", font=self._f_caption, text_color=T("text_muted")).pack(side="left", padx=(6, 0))
+
+        ico_rst = self._icons.get("reset", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 12)
+        ctk.CTkButton(
+            top, text=" 重置", image=ico_rst, compound="left",
+            height=28, width=68, corner_radius=8, font=self._f_caption,
+            fg_color=T("card"), hover_color=T("card_hover"),
+            border_width=1, border_color=T("border"), text_color=T("text"),
+            command=self._reset_style,
+        ).pack(side="right", padx=(6, 0))
+
+        ico_ext = self._icons.get("external", DARK_PALETTE["accent_fg"], LIGHT_PALETTE["accent_fg"], 12)
+        ctk.CTkButton(
+            top, text=" 浏览器预览", image=ico_ext, compound="left",
+            height=28, width=92, corner_radius=8, font=self._f_caption,
+            fg_color=T("accent"), hover_color=T("accent_hover"),
+            text_color=T("accent_fg"), command=self._open_browser,
+        ).pack(side="right")
+
+        # Live 16:9 Mini Preview Card
+        prev_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        prev_card.pack(fill="x", padx=14, pady=(0, 10))
+        self._overlay_preview = OverlayPreviewCanvas(prev_card, self._palette, height=138)
+        self._overlay_preview.pack(fill="x", padx=8, pady=8)
+
+        # Compact 4x2 Theme Grid
+        theme_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        theme_card.pack(fill="x", padx=14, pady=(0, 10))
+        tgrid = ctk.CTkFrame(theme_card, fg_color="transparent")
+        tgrid.pack(fill="x", padx=10, pady=10)
+        for col in range(4):
+            tgrid.grid_columnconfigure(col, weight=1, uniform="tc")
+
+        self._theme_cards: Dict[str, ctk.CTkButton] = {}
+        for idx, (key, meta) in enumerate(THEMES.items()):
+            r, c = divmod(idx, 4)
+            swatch_hex = OVERLAY_THEME_META.get(key, {}).get("accent", "#FF9F19")
+            swatch_ico = self._icons.solid("dot", swatch_hex, 10)
+            btn = ctk.CTkButton(
+                tgrid, text=f" {meta['label']}", image=swatch_ico, compound="left",
+                anchor="w", height=32, corner_radius=9, font=self._f_caption,
+                fg_color=T("card_alt"), hover_color=T("card_hover"),
+                border_width=1, border_color=T("border"), text_color=T("text"),
+                command=lambda k=key: self._select_overlay_theme(k),
+            )
+            btn.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+            self._theme_cards[key] = btn
+
+        # Two-column: Position+Cover | Colors+Font
+        mid = ctk.CTkFrame(page, fg_color="transparent")
+        mid.pack(fill="x", padx=14, pady=(0, 10))
+        mid.grid_columnconfigure(0, weight=4, uniform="mc")
+        mid.grid_columnconfigure(1, weight=6, uniform="mc")
+
+        pos_card = ctk.CTkFrame(
+            mid, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        pos_card.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        ctk.CTkLabel(pos_card, text="位置与封面", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=12, pady=(10, 6))
+
+        pgrid = ctk.CTkFrame(pos_card, fg_color=T("card_alt"), corner_radius=10)
+        pgrid.pack(padx=12, pady=(0, 8))
+        self._pos_buttons: Dict[str, ctk.CTkButton] = {}
         pos_rows = [
             ["top-left", "top-center", "top-right"],
             ["left", "center", "right"],
@@ -391,480 +651,456 @@ class App(ctk.CTk):
         }
         for ri, row in enumerate(pos_rows):
             for ci, key in enumerate(row):
-                btn = ctk.CTkButton(
-                    grid, text=pos_labels[key], width=48, height=30, corner_radius=8,
-                    command=lambda k=key: self._set_pos(k),
-                    font=self._font_small, fg_color=COLORS["button"],
-                    hover_color=COLORS["button_hover"], text_color=COLORS["text"],
+                b = ctk.CTkButton(
+                    pgrid, text=pos_labels[key], width=44, height=26, corner_radius=7,
+                    font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+                    text_color=T("text"), command=lambda k=key: self._set_pos(k),
                 )
-                btn.grid(row=ri, column=ci, padx=2, pady=2)
-                self._pos_buttons[key] = btn
+                b.grid(row=ri, column=ci, padx=2, pady=2)
+                self._pos_buttons[key] = b
 
-        # cover side + background + panel row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(0, 6))
-        ctk.CTkLabel(r, text="封面", width=58, anchor="w", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
-        self._cover_buttons = {}
-        for key, text in (("left", "左"), ("right", "右"), ("top", "上")):
-            btn = ctk.CTkButton(
-                r, text=text, width=46, height=30, corner_radius=8,
-                command=lambda k=key: self._set_coverside(k),
-                font=self._font_small, fg_color=COLORS["button"],
-                hover_color=COLORS["button_hover"], text_color=COLORS["text"],
+        crow = ctk.CTkFrame(pos_card, fg_color="transparent")
+        crow.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkLabel(crow, text="封面", font=self._f_caption, text_color=T("text_secondary")).pack(side="left", padx=(0, 6))
+        self._cover_buttons: Dict[str, ctk.CTkButton] = {}
+        for key, label in (("left", "左"), ("right", "右"), ("top", "上")):
+            b = ctk.CTkButton(
+                crow, text=label, width=38, height=24, corner_radius=7,
+                font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+                text_color=T("text"), command=lambda k=key: self._set_coverside(k),
             )
-            btn.pack(side="left", padx=(0, 4))
-            self._cover_buttons[key] = btn
-        self._btn_bg = ctk.CTkButton(
-            r, text="背景: 透明", width=112, height=30, corner_radius=8,
-            command=lambda: self._set_bg(""), font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
+            b.pack(side="left", padx=2)
+            self._cover_buttons[key] = b
+
+        col_card = ctk.CTkFrame(
+            mid, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
         )
-        self._btn_bg.pack(side="left", padx=(14, 4))
+        col_card.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        ctk.CTkLabel(col_card, text="配色与字体", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=12, pady=(10, 6))
+
+        arow = ctk.CTkFrame(col_card, fg_color="transparent")
+        arow.pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkLabel(arow, text="强调", width=36, anchor="w", font=self._f_caption, text_color=T("text_secondary")).pack(side="left")
+        self._accent_buttons: Dict[str, ctk.CTkButton] = {}
+        for color in ("#ff9f19", "#1ed760", "#5cc8ff", "#ff2da0", "#2563eb", "#ffffff"):
+            b = ctk.CTkButton(
+                arow, text="", width=22, height=22, corner_radius=11,
+                fg_color=color, hover_color=color,
+                border_width=1, border_color=T("border_strong"),
+                command=lambda c=color: self._set_accent(c),
+            )
+            b.pack(side="left", padx=(0, 5))
+            self._accent_buttons[color] = b
         ctk.CTkButton(
-            r, text="背景自定义…", width=100, height=30, corner_radius=8,
-            command=self._pick_bg, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
-        ).pack(side="left", padx=(0, 14))
+            arow, text="取色…", width=50, height=24, corner_radius=7,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=self._pick_accent,
+        ).pack(side="left", padx=(2, 0))
+
+        brow = ctk.CTkFrame(col_card, fg_color="transparent")
+        brow.pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkLabel(brow, text="背景", width=36, anchor="w", font=self._f_caption, text_color=T("text_secondary")).pack(side="left")
+        self._btn_bg = ctk.CTkButton(
+            brow, text="透明", width=64, height=24, corner_radius=7,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=lambda: self._set_bg(""),
+        )
+        self._btn_bg.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(
+            brow, text="自定义…", width=58, height=24, corner_radius=7,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=self._pick_bg,
+        ).pack(side="left", padx=(0, 10))
+
+        prow = ctk.CTkFrame(col_card, fg_color="transparent")
+        prow.pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkLabel(prow, text="面板", width=36, anchor="w", font=self._f_caption, text_color=T("text_secondary")).pack(side="left")
         self._btn_panel = ctk.CTkButton(
-            r, text="面板: 默认", width=112, height=30, corner_radius=8,
-            command=lambda: self._set_panel(""), font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
+            prow, text="默认", width=64, height=24, corner_radius=7,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=lambda: self._set_panel(""),
         )
         self._btn_panel.pack(side="left", padx=(0, 4))
         ctk.CTkButton(
-            r, text="面板自定义…", width=100, height=30, corner_radius=8,
-            command=self._pick_panel, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
+            prow, text="自定义…", width=58, height=24, corner_radius=7,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=self._pick_panel,
         ).pack(side="left")
 
-        # accent row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(0, 6))
-        ctk.CTkLabel(r, text="强调色", width=58, anchor="w", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
-        self._accent_buttons = {}
-        for color in ("#ff9f19", "#1ed760", "#5cc8ff", "#ff2da0", "#2563eb", "#ffffff"):
-            btn = ctk.CTkButton(
-                r, text="", width=30, height=30, corner_radius=8,
-                command=lambda c=color: self._set_accent(c),
-                fg_color=color, hover_color=color,
-            )
-            btn.pack(side="left", padx=(0, 5))
-            self._accent_buttons[color] = btn
-        ctk.CTkButton(
-            r, text="自定义…", width=90, height=30, corner_radius=8,
-            command=self._pick_accent, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
-        ).pack(side="left")
-
-        # lyric font row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(0, 6))
-        ctk.CTkLabel(r, text="歌词字体", width=58, anchor="w", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
+        frow = ctk.CTkFrame(col_card, fg_color="transparent")
+        frow.pack(fill="x", padx=12, pady=(2, 10))
+        ctk.CTkLabel(frow, text="字体", width=36, anchor="w", font=self._f_caption, text_color=T("text_secondary")).pack(side="left")
         self._font_families = ["默认"] + sorted(
             set(f for f in tkfont.families() if not f.startswith("@"))
         )
         self._lyric_font_name = ctk.CTkLabel(
-            r, text="默认", width=170, anchor="w",
-            font=self._font_small, text_color=COLORS["text"],
+            frow, text="默认", anchor="w", font=self._f_small_bold, text_color=T("text"),
         )
-        self._lyric_font_name.pack(side="left", padx=(6, 10))
+        self._lyric_font_name.pack(side="left", padx=(0, 6))
         ctk.CTkButton(
-            r, text="选择字体…", width=110, height=32, corner_radius=10,
-            command=self._pick_lyric_font, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"],
-        ).pack(side="left", padx=(0, 14))
-        self._lyric_preview = ctk.CTkLabel(
-            r, text="示例歌词 AaBb 中文", font=self._font_lyric,
-            text_color=COLORS["dim"],
-        )
-        self._lyric_preview.pack(side="left")
+            frow, text="选择字体…", width=72, height=24, corner_radius=7,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=self._pick_lyric_font,
+        ).pack(side="right")
 
-        # size entries row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(0, 6))
+        # Dimensions & Switches Card
+        dim_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        dim_card.pack(fill="x", padx=14, pady=(0, 14))
+        ctk.CTkLabel(dim_card, text="尺寸与显隐", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=12, pady=(10, 6))
+
+        drow = ctk.CTkFrame(dim_card, fg_color="transparent")
+        drow.pack(fill="x", padx=12, pady=(0, 10))
         self._var_width = ctk.StringVar()
         self._var_fontsize = ctk.StringVar()
         self._var_margin = ctk.StringVar()
         self._var_radius = ctk.StringVar()
         self._var_coverradius = ctk.StringVar()
-        entry_specs = [
-            ("宽度", self._var_width, 70),
-            ("字号", self._var_fontsize, 60),
-            ("边距", self._var_margin, 60),
-            ("圆角", self._var_radius, 60),
-            ("封面圆角", self._var_coverradius, 70),
-        ]
-        first = True
-        for label, var, width in entry_specs:
-            if not first:
-                ctk.CTkLabel(r, text="", width=10).pack(side="left")
-            first = False
-            ctk.CTkLabel(r, text=label, font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
-            entry = ctk.CTkEntry(
-                r, textvariable=var, width=width, height=30, corner_radius=8,
-                fg_color=COLORS["card2"], border_color=COLORS["border"],
-                text_color=COLORS["text"], font=self._font_small,
+        for i, (lab, var) in enumerate((
+            ("宽度", self._var_width), ("字号", self._var_fontsize),
+            ("边距", self._var_margin), ("圆角", self._var_radius), ("封面圆角", self._var_coverradius),
+        )):
+            drow.grid_columnconfigure(i, weight=1)
+            cell = ctk.CTkFrame(drow, fg_color="transparent")
+            cell.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 5, 0))
+            ctk.CTkLabel(cell, text=lab, font=self._f_caption, text_color=T("text_muted"), anchor="w").pack(anchor="w")
+            ent = ctk.CTkEntry(
+                cell, textvariable=var, height=28, corner_radius=7,
+                placeholder_text="默认",
+                fg_color=T("card_alt"), border_color=T("border"),
+                text_color=T("text"), font=self._f_caption,
             )
-            entry.pack(side="left", padx=(4, 0))
-            entry.bind("<Return>", self._style_apply)
-            entry.bind("<FocusOut>", self._style_apply)
+            ent.pack(fill="x", pady=(2, 0))
+            ent.bind("<Return>", self._style_apply)
+            ent.bind("<FocusOut>", self._style_apply)
 
-        # switches row
-        r = ctk.CTkFrame(parent, fg_color="transparent")
-        r.pack(fill="x", padx=6, pady=(2, 10))
-        self._switches = {}
-        for cfg_key, label in (
-            ("hide_cover", "隐藏封面"), ("hide_title", "隐藏标题"), ("hide_state", "隐藏状态"),
-            ("hide_progress", "隐藏进度"), ("hide_lyrics", "隐藏歌词"),
-            ("hide_when_stopped", "停止时隐藏"), ("demo", "演示模式"),
-        ):
+        sgrid = ctk.CTkFrame(dim_card, fg_color="transparent")
+        sgrid.pack(fill="x", padx=12, pady=(0, 10))
+        for c in range(4):
+            sgrid.grid_columnconfigure(c, weight=1)
+        self._switches: Dict[str, ctk.CTkSwitch] = {}
+        for idx, (cfg_key, label) in enumerate((
+            ("hide_cover", "隐藏封面"), ("hide_title", "隐藏标题"),
+            ("hide_state", "隐藏状态"), ("hide_progress", "隐藏进度"),
+            ("hide_lyrics", "隐藏歌词"), ("hide_when_stopped", "停止隐藏"),
+            ("demo", "演示模式"),
+        )):
+            r, c = divmod(idx, 4)
             sw = ctk.CTkSwitch(
-                r, text=label, font=self._font_small,
-                progress_color=COLORS["accent"],
+                sgrid, text=label, font=self._f_caption, switch_width=32, switch_height=16,
+                text_color=T("text"), fg_color=("#CBD5E1", "#2B3346"),
+                progress_color=T("accent"),
+                button_color=("#FFFFFF", "#F2F4F8"),
+                button_hover_color=("#F8FAFC", "#FFFFFF"),
                 command=lambda k=cfg_key: self._on_switch(k),
             )
-            sw.pack(side="left", padx=(0, 14))
+            sw.grid(row=r, column=c, sticky="w", pady=4, padx=(0, 4))
             self._switches[cfg_key] = sw
 
-        self._style_refresh()
+        return page
 
-    def _build_obs_panel(self, parent) -> None:
-        ctk.CTkLabel(
-            parent, text="OBS 浏览器源", font=self._font_section,
-            text_color=COLORS["dim"], anchor="w",
-        ).pack(anchor="w", padx=6, pady=(12, 6))
+    # ------------------------------------------------- Page 3: OBS & Export
 
-        card = ctk.CTkFrame(
-            parent, fg_color=COLORS["card"], corner_radius=20,
-            border_width=1, border_color=COLORS["border"],
+    def _build_obs_page(self, parent) -> ctk.CTkScrollableFrame:
+        page = ctk.CTkScrollableFrame(parent, fg_color=T("bg"), corner_radius=0)
+
+        # Card 1: OBS Browser Source
+        url_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
         )
-        card.pack(fill="x", padx=6, pady=(0, 8))
-        row1 = ctk.CTkFrame(card, fg_color="transparent")
-        row1.pack(fill="x", padx=18, pady=(14, 8))
-        ctk.CTkLabel(row1, text="端口", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
+        url_card.pack(fill="x", padx=14, pady=(12, 10))
+        ctk.CTkLabel(url_card, text="OBS 浏览器源地址", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=14, pady=(12, 6))
+
+        url_box = ctk.CTkFrame(
+            url_card, fg_color=T("card_alt"), corner_radius=10,
+            border_width=1, border_color=T("border"),
+        )
+        url_box.pack(fill="x", padx=14, pady=(0, 8))
+        self.lbl_obs_url = ctk.CTkLabel(
+            url_box, text=self.server.url, font=self._f_mono,
+            text_color=T("accent"), anchor="w",
+        )
+        self.lbl_obs_url.pack(side="left", padx=10, pady=7, fill="x", expand=True)
+
+        ico_copy = self._icons.get("copy", DARK_PALETTE["accent_fg"], LIGHT_PALETTE["accent_fg"], 12)
+        ctk.CTkButton(
+            url_box, text=" 复制", image=ico_copy, compound="left",
+            width=66, height=26, corner_radius=7, font=self._f_caption,
+            fg_color=T("accent"), hover_color=T("accent_hover"), text_color=T("accent_fg"),
+            command=self._copy_url,
+        ).pack(side="right", padx=(4, 6), pady=4)
+
+        acts = ctk.CTkFrame(url_card, fg_color="transparent")
+        acts.pack(fill="x", padx=14, pady=(0, 12))
+        ico_ext = self._icons.get("external", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 12)
+        ctk.CTkButton(
+            acts, text=" 打开覆盖页", image=ico_ext, compound="left",
+            height=28, corner_radius=8, font=self._f_caption,
+            fg_color=T("button"), hover_color=T("button_hover"), text_color=T("text"),
+            command=self._open_browser,
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            acts, text=" 主题画廊 (/preview)", image=ico_ext, compound="left",
+            height=28, corner_radius=8, font=self._f_caption,
+            fg_color=T("button"), hover_color=T("button_hover"), text_color=T("text"),
+            command=self._open_preview_gallery,
+        ).pack(side="left")
+        ctk.CTkLabel(
+            acts, text="建议 OBS 尺寸 460×240", font=self._f_caption, text_color=T("text_muted"),
+        ).pack(side="right")
+
+        # Card 2: Service Params
+        srv_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        srv_card.pack(fill="x", padx=14, pady=(0, 10))
+        srow = ctk.CTkFrame(srv_card, fg_color="transparent")
+        srow.pack(fill="x", padx=14, pady=12)
+        ctk.CTkLabel(srow, text="端口", font=self._f_small, text_color=T("text_secondary")).pack(side="left")
         self.var_port = ctk.StringVar(value=str(getattr(self.server, "port", 8765)))
         self._entry_port = ctk.CTkEntry(
-            row1, textvariable=self.var_port, width=72, height=32,
-            corner_radius=10, fg_color=COLORS["card2"], border_color=COLORS["border"],
-            text_color=COLORS["text"], font=self._font_small,
+            srow, textvariable=self.var_port, width=72, height=30, corner_radius=8,
+            fg_color=T("card_alt"), border_color=T("border"),
+            text_color=T("text"), font=self._f_mono,
         )
         self._entry_port.pack(side="left", padx=(6, 16))
         self._entry_port.bind("<Return>", self._save_runtime_settings)
         self._entry_port.bind("<FocusOut>", self._save_runtime_settings)
-        ctk.CTkLabel(row1, text="刷新 ms", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
+
+        ctk.CTkLabel(srow, text="刷新 (ms)", font=self._f_small, text_color=T("text_secondary")).pack(side="left")
         self.var_refresh = ctk.StringVar(value=str(self.refresh_ms))
         self._entry_refresh = ctk.CTkEntry(
-            row1, textvariable=self.var_refresh, width=72, height=32,
-            corner_radius=10, fg_color=COLORS["card2"], border_color=COLORS["border"],
-            text_color=COLORS["text"], font=self._font_small,
+            srow, textvariable=self.var_refresh, width=72, height=30, corner_radius=8,
+            fg_color=T("card_alt"), border_color=T("border"),
+            text_color=T("text"), font=self._f_mono,
         )
         self._entry_refresh.pack(side="left", padx=(6, 16))
         self._entry_refresh.bind("<Return>", self._save_runtime_settings)
         self._entry_refresh.bind("<FocusOut>", self._save_runtime_settings)
-        self.btn_server = ctk.CTkButton(
-            row1, text="启动服务", width=96, height=32, corner_radius=10,
-            command=self._toggle_server, font=self._font_small,
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color="#14100a",
-        )
-        self.btn_server.pack(side="left", padx=(0, 8))
-        ctk.CTkButton(
-            row1, text="复制 OBS 地址", width=112, height=32, corner_radius=10,
-            command=self._copy_url, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(
-            row1, text="浏览器预览", width=100, height=32, corner_radius=10,
-            command=self._open_browser, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
-        ).pack(side="left")
 
-        row2 = ctk.CTkFrame(card, fg_color="transparent")
-        row2.pack(fill="x", padx=18, pady=(0, 14))
-        ctk.CTkLabel(row2, text="导出目录", font=self._font_small, text_color=COLORS["dim"]).pack(side="left")
+        self.btn_server = ctk.CTkButton(
+            srow, text="停止服务" if self.server.running else "启动服务",
+            width=88, height=30, corner_radius=8, font=self._f_small_bold,
+            fg_color=T("accent"), hover_color=T("accent_hover"), text_color=T("accent_fg"),
+            command=self._toggle_server,
+        )
+        self.btn_server.pack(side="right")
+
+        # Card 3: Export Dir
+        exp_card = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        exp_card.pack(fill="x", padx=14, pady=(0, 14))
+        ctk.CTkLabel(exp_card, text="纯文件导出目录", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=14, pady=(12, 6))
+
+        erow = ctk.CTkFrame(exp_card, fg_color="transparent")
+        erow.pack(fill="x", padx=14, pady=(0, 8))
         self.var_export = ctk.StringVar(value=str(self.export_dir))
         self._entry_export = ctk.CTkEntry(
-            row2, textvariable=self.var_export, height=32, corner_radius=10,
-            fg_color=COLORS["card2"], border_color=COLORS["border"],
-            text_color=COLORS["text"], font=self._font_small,
+            erow, textvariable=self.var_export, height=30, corner_radius=8,
+            fg_color=T("card_alt"), border_color=T("border"),
+            text_color=T("text"), font=self._f_small,
         )
-        self._entry_export.pack(side="left", fill="x", expand=True, padx=(8, 8))
+        self._entry_export.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self._entry_export.bind("<Return>", self._save_runtime_settings)
         self._entry_export.bind("<FocusOut>", self._save_runtime_settings)
+
         ctk.CTkButton(
-            row2, text="选择…", width=76, height=32, corner_radius=10,
-            command=self._choose_export, font=self._font_small,
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"], text_color=COLORS["text"],
+            erow, text="选择…", width=62, height=30, corner_radius=8,
+            font=self._f_caption, fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), command=self._choose_export,
+        ).pack(side="left", padx=(0, 5))
+
+        ico_fld = self._icons.get("folder", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 12)
+        ctk.CTkButton(
+            erow, text=" 打开", image=ico_fld, compound="left",
+            width=62, height=30, corner_radius=8, font=self._f_caption,
+            fg_color=T("button"), hover_color=T("button_hover"), text_color=T("text"),
+            command=self._open_export_dir,
         ).pack(side="left")
 
-        self.lbl_hint = ctk.CTkLabel(
-            parent, text="OBS 中添加“浏览器”源，URL 填 http://127.0.0.1:8765/ 即可",
-            font=self._font_small, text_color=COLORS["dim"], anchor="w",
+        chips = ctk.CTkFrame(exp_card, fg_color="transparent")
+        chips.pack(fill="x", padx=14, pady=(0, 12))
+        for fname in ("nowplaying.json", "nowplaying.txt", "cover.png", "lyrics.lrc"):
+            ctk.CTkLabel(
+                chips, text=fname, font=self._f_mono,
+                text_color=T("text_secondary"), fg_color=T("card_alt"),
+                corner_radius=6, padx=8, pady=2,
+            ).pack(side="left", padx=(0, 5))
+
+        return page
+
+    # --------------------------------------------------- Page 4: Mobile
+
+    def _build_mobile_page(self, parent) -> ctk.CTkScrollableFrame:
+        page = ctk.CTkScrollableFrame(parent, fg_color=T("bg"), corner_radius=0)
+
+        mcard = ctk.CTkFrame(
+            page, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
         )
-        self.lbl_hint.pack(fill="x", padx=6, pady=(0, 14))
+        mcard.pack(fill="x", padx=14, pady=(12, 10))
 
-
-    # --------------------------------------------------------- mobile
-    def _lan_ip(self) -> str:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-            finally:
-                s.close()
-        except Exception:
-            return "127.0.0.1"
-
-    def _open_mobile_window(self) -> None:
-        if self._mobile_window is not None and self._mobile_window.winfo_exists():
-            self._mobile_window.focus()
-            return
-        win = ctk.CTkToplevel(self)
-        win.title("手机连接")
-        self._set_window_icon(win)
-        win.geometry("440x400")
-        win.minsize(400, 340)
-        self._mobile_window = win
-        devs = self.server.devices
-        ip = self._lan_ip()
-
-        ctk.CTkLabel(
-            win, text="📱 手机连接", font=self._font_title, text_color=COLORS["text"],
-        ).pack(anchor="w", padx=18, pady=(16, 2))
-        ctk.CTkLabel(
-            win, text="同一 Wi-Fi 下用 Safari 打开下方地址；首次连接需电脑同意。",
-            font=self._font_small, text_color=COLORS["dim"], anchor="w", wraplength=420,
-        ).pack(anchor="w", padx=18)
-
+        mrow = ctk.CTkFrame(mcard, fg_color="transparent")
+        mrow.pack(fill="x", padx=14, pady=(12, 8))
         self._mobile_switch = ctk.CTkSwitch(
-            win, text="启用手机连接", command=self._toggle_mobile,
-            font=self._font, progress_color=COLORS["accent"],
+            mrow, text="启用局域网手机连接", command=self._toggle_mobile,
+            font=self._f_small_bold, text_color=T("text"),
+            fg_color=("#CBD5E1", "#2B3346"), progress_color=T("accent"),
+            button_color=("#FFFFFF", "#F2F4F8"),
+            button_hover_color=("#F8FAFC", "#FFFFFF"),
         )
-        self._mobile_switch.pack(anchor="w", padx=18, pady=(12, 2))
-        if devs.enabled:
+        self._mobile_switch.pack(side="left")
+        if self.server.devices.enabled:
             self._mobile_switch.select()
         else:
             self._mobile_switch.deselect()
 
-        url = f"http://{ip}:{self.server.port}/m"
-        urlrow = ctk.CTkFrame(win, fg_color=COLORS["card2"], corner_radius=10)
-        urlrow.pack(fill="x", padx=18, pady=(6, 2))
+        url_box = ctk.CTkFrame(
+            mcard, fg_color=T("card_alt"), corner_radius=10,
+            border_width=1, border_color=T("border"),
+        )
+        url_box.pack(fill="x", padx=14, pady=(0, 8))
         self.lbl_mobile_url = ctk.CTkLabel(
-            urlrow, text=url, font=self._font_small,
-            text_color=COLORS["accent"], anchor="w",
+            url_box, text=f"http://{self._lan_ip()}:{self.server.port}/m",
+            font=self._f_mono, text_color=T("accent"), anchor="w",
         )
-        self.lbl_mobile_url.pack(side="left", padx=12, pady=8)
-
-        ctk.CTkLabel(
-            win, text="待审核设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
-        ).pack(anchor="w", padx=18, pady=(12, 2))
-        self.mobile_pending = ctk.CTkScrollableFrame(win, fg_color="transparent", height=64)
-        self.mobile_pending.pack(fill="x", padx=12, pady=(0, 4))
-        self.lbl_no_pending = ctk.CTkLabel(
-            self.mobile_pending, text="暂无待审核设备",
-            font=self._font_small, text_color=COLORS["dim"],
-        )
-
-        ctk.CTkLabel(
-            win, text="已授权设备", font=self._font_section, text_color=COLORS["dim"], anchor="w",
-        ).pack(anchor="w", padx=18, pady=(8, 2))
-        self.mobile_approved = ctk.CTkScrollableFrame(win, fg_color="transparent", height=64)
-        self.mobile_approved.pack(fill="x", padx=12, pady=(0, 4))
-        self.lbl_no_approved = ctk.CTkLabel(
-            self.mobile_approved, text="暂无已授权设备",
-            font=self._font_small, text_color=COLORS["dim"],
-        )
-        self._pending_rows = []
-        self._approved_rows = []
+        self.lbl_mobile_url.pack(side="left", padx=10, pady=7, fill="x", expand=True)
+        ico_copy = self._icons.get("copy", DARK_PALETTE["text"], LIGHT_PALETTE["text"], 12)
+        ctk.CTkButton(
+            url_box, text=" 复制", image=ico_copy, compound="left",
+            width=66, height=26, corner_radius=7, font=self._f_caption,
+            fg_color=T("button"), hover_color=T("button_hover"), text_color=T("text"),
+            command=self._copy_mobile_url,
+        ).pack(side="right", padx=(4, 6), pady=4)
 
         self.lbl_mobile_hint = ctk.CTkLabel(
-            win, text="", font=self._font_small, text_color=COLORS["dim"],
-            anchor="w", wraplength=420,
+            mcard, text="", font=self._f_caption, text_color=T("text_muted"), anchor="w",
         )
-        self.lbl_mobile_hint.pack(anchor="w", padx=18, pady=(6, 10))
+        self.lbl_mobile_hint.pack(anchor="w", padx=14, pady=(0, 12))
 
-        win.protocol("WM_DELETE_WINDOW", self._close_mobile_window)
-        # Auto-fit height so both the pending and approved lists are visible.
-        win.update_idletasks()
-        win.geometry(f"460x{win.winfo_reqheight() + 12}")
-        self._refresh_mobile_view()
-        win.after(2000, self._mobile_poll)
+        # Two-column device lists
+        drow = ctk.CTkFrame(page, fg_color="transparent")
+        drow.pack(fill="x", padx=14, pady=(0, 14))
+        drow.grid_columnconfigure(0, weight=1, uniform="devc")
+        drow.grid_columnconfigure(1, weight=1, uniform="devc")
 
-    def _close_mobile_window(self) -> None:
-        if self._mobile_window is not None:
-            self._mobile_window.destroy()
-            self._mobile_window = None
-        self._pending_rows = []
-        self._approved_rows = []
-        self.lbl_no_pending = None
-        self.lbl_no_approved = None
-
-    def _toggle_mobile(self) -> None:
-        devs = self.server.devices
-        on = bool(self._mobile_switch.get())
-        devs.enabled = on
-        self.settings.mobile_enabled = on
-        self.settings.save()
-        loopback = ("127.0.0.1", "localhost", "::1")
-        if on and self.server.host in loopback:
-            # Rebind to 0.0.0.0 so phones on the LAN can reach /m.
-            self.server.host = "0.0.0.0"
-            self.server.stop()
-            ok = self.server.start()
-            if not ok:
-                self.server.host = "127.0.0.1"
-                self.server.start()
-        elif not on and self.server.host not in loopback:
-            # Restore loopback-only binding when mobile access is turned off.
-            self.server.host = "127.0.0.1"
-            self.server.stop()
-            self.server.start()
-        self._refresh_mobile_view()
-
-    def _mobile_poll(self) -> None:
-        if self._mobile_window is None or not self._mobile_window.winfo_exists():
-            return
-        self._refresh_mobile_view()
-        self._mobile_window.after(2000, self._mobile_poll)
-
-    @staticmethod
-    def _sync_specs(rows: list, specs: list, make_row) -> None:
-        """Grow/reuse ``rows`` to match ``specs`` and hide the leftovers."""
-        for i, (text, actions) in enumerate(specs):
-            if i >= len(rows):
-                rows.append(make_row())
-            rows[i].update(text, actions)
-            rows[i].show(True)
-        for row in rows[len(specs):]:
-            row.show(False)
-
-    def _refresh_mobile_view(self) -> None:
-        if self._mobile_window is None or not self._mobile_window.winfo_exists():
-            return
-        devs = self.server.devices
-        if bool(self._mobile_switch.get()) != devs.enabled:
-            if devs.enabled:
-                self._mobile_switch.select()
-            else:
-                self._mobile_switch.deselect()
-        url = f"http://{self._lan_ip()}:{self.server.port}/m"
-        if url != self._mobile_url_text:
-            self._mobile_url_text = url
-            self.lbl_mobile_url.configure(text=url)
-
-        pending = devs.pending() if devs.enabled else []
-        approved = devs.approved() if devs.enabled else []
-        hint = "" if devs.enabled else "手机连接已关闭。开启后，首次访问需在电脑端同意。"
-        if self.lbl_mobile_hint.cget("text") != hint:
-            self.lbl_mobile_hint.configure(text=hint)
-
-        pending_specs = [
-            (
-                f"{dev.get('name', '?')}  ({dev.get('id', '')})",
-                [
-                    ("同意", lambda d=dev: self._device_action("approve", d["id"]),
-                     COLORS["accent"], "#14100a"),
-                    ("拒绝", lambda d=dev: self._device_action("reject", d["id"]),
-                     COLORS["button"], COLORS["text"]),
-                ],
-            )
-            for dev in pending
-        ]
-        approved_specs = [
-            (
-                f"{dev.get('name', '?')}  ({dev.get('id', '')})",
-                [
-                    ("移除", lambda d=dev: self._device_action("remove", d["id"]),
-                     COLORS["button"], COLORS["text"]),
-                ],
-            )
-            for dev in approved
-        ]
-        self._sync_specs(
-            self._pending_rows, pending_specs,
-            lambda: _DeviceRow(self.mobile_pending, self._font_small),
+        pcard = ctk.CTkFrame(
+            drow, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
         )
-        self._sync_specs(
-            self._approved_rows, approved_specs,
-            lambda: _DeviceRow(self.mobile_approved, self._font_small),
+        pcard.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        ctk.CTkLabel(pcard, text="待审核设备", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=12, pady=(10, 4))
+        self.mobile_pending = ctk.CTkFrame(pcard, fg_color="transparent")
+        self.mobile_pending.pack(fill="x", padx=10, pady=(0, 10))
+        self.lbl_no_pending = ctk.CTkLabel(
+            self.mobile_pending, text="暂无待审核设备",
+            font=self._f_caption, text_color=T("text_muted"), anchor="w",
         )
-        self._sync_placeholder(self.lbl_no_pending, not pending_specs)
-        self._sync_placeholder(self.lbl_no_approved, not approved_specs)
 
-    @staticmethod
-    def _sync_placeholder(label, visible: bool) -> None:
-        if label is None:
-            return
-        packed = bool(label.winfo_manager())
-        if visible and not packed:
-            label.pack(anchor="w", padx=6, pady=4)
-        elif not visible and packed:
-            label.pack_forget()
+        acard = ctk.CTkFrame(
+            drow, fg_color=T("card"), corner_radius=14,
+            border_width=1, border_color=T("border"),
+        )
+        acard.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        ctk.CTkLabel(acard, text="已授权设备", font=self._f_small_bold, text_color=T("text")).pack(anchor="w", padx=12, pady=(10, 4))
+        self.mobile_approved = ctk.CTkFrame(acard, fg_color="transparent")
+        self.mobile_approved.pack(fill="x", padx=10, pady=(0, 10))
+        self.lbl_no_approved = ctk.CTkLabel(
+            self.mobile_approved, text="暂无已授权设备",
+            font=self._f_caption, text_color=T("text_muted"), anchor="w",
+        )
 
-    def _device_action(self, action: str, device_id: str) -> None:
-        devs = self.server.devices
-        if action == "approve":
-            devs.approve(device_id)
-        elif action == "reject":
-            devs.reject(device_id)
-        elif action == "remove":
-            devs.remove(device_id)
-        self._refresh_mobile_view()
+        return page
+
+    # ---------------------------------------- Circular Radial Ripple Theme!
+
+    def _on_theme_toggle(self, is_light: bool) -> None:
+        mode = "light" if is_light else "dark"
+
+        # Compute exact origin coordinates of the Moon/Sun switch relative to root container
+        try:
+            ox = (self._theme_switch.winfo_rootx() - self._root_container.winfo_rootx()) + self._theme_switch.winfo_width() // 2
+            oy = (self._theme_switch.winfo_rooty() - self._root_container.winfo_rooty()) + self._theme_switch.winfo_height() // 2
+        except Exception:
+            ox, oy = self.winfo_width() - 36, 26
+
+        surf_old = capture_region_surface(self, self._root_container)
+        if surf_old is not None and self._curtain.show_static(surf_old, self._root_container, bg=self._palette["bg"]):
+            self._apply_ui_theme(mode, announce=False)
+            self.update()
+            surf_new = capture_region_surface(self, self._root_container)
+            if surf_new is not None:
+                def _done() -> None:
+                    self._toast.show(
+                        "已切换到亮色模式" if mode == "light" else "已切换到深色模式",
+                        "accent",
+                    )
+
+                self._curtain.play_radial_ripple(
+                    surf_old, surf_new, (ox, oy), self._palette["accent"],
+                    duration_ms=340, on_done=_done,
+                )
+                return
+            self._curtain.hide()
+        elif surf_old is not None:
+            surf_old.release()
+
+        self._apply_ui_theme(mode, announce=True)
+
+    def _apply_ui_theme(self, mode: str, announce: bool = False) -> None:
+        mode = "light" if str(mode).lower() == "light" else "dark"
+        self._ui_mode = mode
+        self._palette = get_palette(mode)
+
+        def _recolor() -> None:
+            ctk.set_appearance_mode(mode)
+            apply_native_titlebar_theme(self, mode == "dark")
+            self._theme_switch.apply_theme(self._palette)
+            self._tab_bar.apply_theme(self._palette)
+            self._status_dot.apply_theme(self._palette)
+            self._cover_stage.apply_theme(self._palette)
+            self._equalizer.apply_theme(self._palette, bg_key="card")
+            self._progress_bar.apply_theme(self._palette)
+            self._lyrics_stage.apply_theme(self._palette)
+            self._overlay_preview.apply_theme(self._palette)
+            self._toast.apply_theme(self._palette)
+
+        if self._curtain.active:
+            _recolor()
+        else:
+            atomic_widget_swap(self, _recolor)
+
+        self.settings.ui_theme = mode
+        if self._settings_ready:
+            try:
+                self.settings.save()
+            except Exception:
+                pass
+
+        if announce:
+            self._toast.show("已切换到亮色模式" if mode == "light" else "已切换到深色模式", "accent")
+
+    # ------------------------------------------------------ Backwards Compat
 
     def _open_settings_window(self) -> None:
-        if self._settings_window is not None and self._settings_window.winfo_exists():
-            self._settings_window.focus()
-            return
-        win = ctk.CTkToplevel(self)
-        win.title("覆盖页样式 & OBS 设置")
-        self._set_window_icon(win)
-        win.geometry("840x760")
-        win.minsize(780, 560)
-        win.configure(fg_color=COLORS["bg"])
-        win.transient(self)
-        win.lift()
-        win.focus_force()
-        win.after(80, win.lift)
-        scroll = ctk.CTkScrollableFrame(win, fg_color=COLORS["bg"], corner_radius=0)
-        scroll.pack(fill="both", expand=True)
-        self._build_style_panel(scroll)
-        self._build_obs_panel(scroll)
-        self._settings_window = win
-        win.protocol("WM_DELETE_WINDOW", lambda: self._close_settings_window(win))
+        self._switch_tab("overlay")
 
-    def _close_settings_window(self, win=None) -> None:
-        if win is None:
-            win = self._settings_window
-        if win is not None and win.winfo_exists():
-            win.destroy()
-        self._settings_window = None
+    def _open_mobile_window(self) -> None:
+        self._switch_tab("mobile")
 
-    def _toggle_floating(self) -> None:
-        if self._floating is not None and getattr(self._floating, "closed", False) is False:
-            self._floating.close()
-            self._floating = None
-            self.btn_floating.configure(text="🖥 桌面悬浮窗")
-            return
-        from .floating import FloatingOverlay
-        self._floating = FloatingOverlay(
-            self, self.state_hub, self.cover_store, self.server.config,
-            self.refresh_ms, self.settings, self.client,
-        )
-        self.btn_floating.configure(text="关闭悬浮窗")
+    # -------------------------------------------------------- Overlay Style
 
-    def _font_bold(self) -> ctk.CTkFont:
-        if getattr(self, "_font_bold_obj", None) is None:
-            self._font_bold_obj = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
-        return self._font_bold_obj
-
-    # --------------------------------------------------- overlay style
-
-    def _on_theme(self, choice: str) -> None:
-        key = self._theme_keys.get(choice)
-        if key:
-            self.server.config.theme = key
-            self._style_refresh()
+    def _select_overlay_theme(self, key: str) -> None:
+        self.server.config.theme = key
+        self._style_refresh()
+        self._toast.show(f"已切换主题：{THEMES[key]['label']}", "accent")
 
     def _set_pos(self, key: str) -> None:
         self.server.config.pos = key
@@ -891,136 +1127,35 @@ class App(ctk.CTk):
         self.server.config.lyric_font = "" if choice == "默认" else choice
         self._style_refresh()
 
-    def _pick_lyric_font(self) -> None:
-        if getattr(self, "_font_dialog", None) is not None and self._font_dialog.winfo_exists():
-            self._font_dialog.focus()
-            return
-        dlg = ctk.CTkToplevel(self)
-        self._font_dialog = dlg
-        dlg.title("选择歌词字体")
-        dlg.geometry("440x560")
-        dlg.minsize(400, 480)
-        self._set_window_icon(dlg)
-        dlg.configure(fg_color=COLORS["bg"])
-        dlg.transient(self)
-        dlg.grab_set()
-
-        search = ctk.CTkEntry(
-            dlg, placeholder_text="输入关键字搜索字体…", height=36, corner_radius=10,
-            fg_color=COLORS["card2"], border_color=COLORS["border"],
-            text_color=COLORS["text"], font=self._font_small,
-        )
-        search.pack(fill="x", padx=16, pady=(14, 8))
-
-        list_frame = ctk.CTkFrame(
-            dlg, fg_color=COLORS["card"], corner_radius=12,
-            border_width=1, border_color=COLORS["border"],
-        )
-        list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-        listbox = tk.Listbox(
-            list_frame, bg=COLORS["card2"], fg=COLORS["text"],
-            selectbackground=COLORS["accent"], selectforeground="#101014",
-            relief="flat", highlightthickness=0,
-            font=("Segoe UI", 12), activestyle="none",
-        )
-        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
-        listbox.configure(yscrollcommand=scrollbar.set)
-        listbox.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
-        scrollbar.pack(side="right", fill="y", pady=4)
-
-        preview = ctk.CTkLabel(
-            dlg, text="示例歌词 AaBb 中文", anchor="w",
-            font=ctk.CTkFont(family="Segoe UI", size=16),
-            text_color=COLORS["text"],
-        )
-        preview.pack(fill="x", padx=16, pady=(0, 8))
-
-        btns = ctk.CTkFrame(dlg, fg_color="transparent")
-        btns.pack(fill="x", padx=16, pady=(0, 14))
-        ctk.CTkButton(
-            btns, text="默认字体", width=100, height=34, corner_radius=10,
-            command=lambda: self._finish_font_pick(dlg, "默认"),
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"], font=self._font_small,
-        ).pack(side="left")
-        ctk.CTkButton(
-            btns, text="确定", width=90, height=34, corner_radius=10,
-            command=lambda: self._font_pick_ok(dlg, listbox),
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            text_color="#14100a", font=self._font_small,
-        ).pack(side="right")
-        ctk.CTkButton(
-            btns, text="取消", width=80, height=34, corner_radius=10,
-            command=lambda: self._close_font_dialog(dlg),
-            fg_color=COLORS["button"], hover_color=COLORS["button_hover"],
-            text_color=COLORS["text"], font=self._font_small,
-        ).pack(side="right", padx=(0, 8))
-
-        fonts = [f for f in self._font_families if f != "默认"]
-
-        def refresh(keyword: str = "") -> None:
-            listbox.delete(0, tk.END)
-            kw = keyword.strip().lower()
-            for f in fonts:
-                if kw in f.lower():
-                    listbox.insert(tk.END, f)
-            current = self.server.config.lyric_font
-            if current:
-                for i in range(listbox.size()):
-                    if listbox.get(i) == current:
-                        listbox.selection_clear(0, tk.END)
-                        listbox.selection_set(i)
-                        listbox.see(i)
-                        break
-
-        def on_key(_event) -> None:
-            refresh(search.get())
-
-        def on_select(_event) -> None:
-            sel = listbox.curselection()
-            if sel:
-                name = listbox.get(sel[0])
-                try:
-                    preview.configure(font=ctk.CTkFont(family=name, size=16))
-                except Exception:
-                    pass
-
-        def finish(_event=None) -> None:
-            self._font_pick_ok(dlg, listbox)
-
-        search.bind("<KeyRelease>", on_key)
-        listbox.bind("<<ListboxSelect>>", on_select)
-        listbox.bind("<Double-Button-1>", finish)
-        dlg.bind("<Return>", finish)
-        dlg.bind("<Escape>", lambda e: self._close_font_dialog(dlg))
-        dlg.protocol("WM_DELETE_WINDOW", lambda: self._close_font_dialog(dlg))
-        refresh()
-        if self.server.config.lyric_font:
-            search.insert(0, self.server.config.lyric_font)
-        search.focus_set()
-
-    def _font_pick_ok(self, dlg, listbox) -> None:
-        sel = listbox.curselection()
-        if sel:
-            self._finish_font_pick(dlg, listbox.get(sel[0]))
-        else:
-            self._close_font_dialog(dlg)
-
-    def _finish_font_pick(self, dlg, choice: str) -> None:
-        self._on_lyric_font(choice)
-        self._close_font_dialog(dlg)
-
-    def _close_font_dialog(self, dlg) -> None:
-        if getattr(self, "_font_dialog", None) is dlg:
-            self._font_dialog = None
-        try:
-            dlg.destroy()
-        except Exception:
-            pass
-
     def _on_switch(self, key: str) -> None:
         setattr(self.server.config, key, self._switches[key].get() == 1)
         self._style_refresh()
+        self._sync_quick_dock()
+
+    def _toggle_demo_quick(self) -> None:
+        new_val = not bool(getattr(self.server.config, "demo", False))
+        self.server.config.demo = new_val
+        self._style_refresh()
+        self._sync_quick_dock()
+        self._toast.show("已开启演示模式" if new_val else "已关闭演示模式", "accent")
+
+    def _sync_quick_dock(self) -> None:
+        float_on = self._floating is not None and getattr(self._floating, "closed", False) is False
+        self.btn_floating.configure(
+            text="悬浮中" if float_on else "悬浮窗",
+            image=self._ico_float_on if float_on else self._ico_float_idle,
+            fg_color=T("accent_soft") if float_on else T("card_alt"),
+            border_color=T("accent") if float_on else T("border"),
+            text_color=T("accent") if float_on else T("text_secondary"),
+        )
+        demo_on = bool(getattr(self.server.config, "demo", False))
+        self.btn_demo_quick.configure(
+            text="演示中" if demo_on else "演示",
+            image=self._ico_demo_on if demo_on else self._ico_demo_idle,
+            fg_color=T("accent_soft") if demo_on else T("card_alt"),
+            border_color=T("accent") if demo_on else T("border"),
+            text_color=T("accent") if demo_on else T("text_secondary"),
+        )
 
     def _style_apply(self, _event=None) -> None:
         cfg = self.server.config
@@ -1041,10 +1176,11 @@ class App(ctk.CTk):
     def _reset_style(self) -> None:
         self.server.config.update_from_dict(OverlayConfig().to_dict())
         self._style_refresh()
-        self.lbl_hint.configure(text="已恢复默认样式，OBS 浏览器源约 1-2 秒后更新。")
+        self._sync_quick_dock()
+        self._toast.show("已恢复默认覆盖页样式", "success")
 
     def _save_overlay(self) -> None:
-        if not getattr(self, "_settings_ready", False):
+        if not self._settings_ready:
             return
         try:
             self.settings.overlay = self.server.config
@@ -1052,84 +1188,53 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    def _save_runtime_settings(self, _event=None) -> None:
-        if not hasattr(self, "var_port"):
-            self.settings.port = self.server.port
-            try:
-                self.settings.save()
-            except Exception:
-                pass
-            return
-        try:
-            self.settings.port = int(self.var_port.get())
-        except ValueError:
-            pass
-        try:
-            self.settings.refresh_ms = max(100, int(self.var_refresh.get()))
-        except ValueError:
-            pass
-        try:
-            new_dir = Path(self.var_export.get().strip() or str(self.export_dir))
-            if new_dir != self.export_dir:
-                self.export_dir = new_dir
-                if self.state_hub.exporter:
-                    self.state_hub.exporter = type(self.state_hub.exporter)(self.export_dir)
-        except Exception:
-            pass
-        self.settings.export_dir = str(self.export_dir)
-        try:
-            self.settings.save()
-        except Exception:
-            pass
-
     def _style_refresh(self) -> None:
         cfg = self.server.config
-        label = next(
-            (lab for lab, key in self._theme_keys.items() if key == cfg.theme),
-            self._theme_labels[0],
-        )
-        self._theme_combo.set(label)
-        for key, btn in self._pos_buttons.items():
-            active = key == cfg.pos
+        for key, btn in self._theme_cards.items():
+            active = (key == cfg.theme)
             btn.configure(
-                fg_color=COLORS["accent"] if active else COLORS["button"],
-                hover_color=COLORS["accent_hover"] if active else COLORS["button_hover"],
+                fg_color=T("accent_soft") if active else T("card_alt"),
+                border_color=T("accent") if active else T("border"),
+                text_color=T("accent") if active else T("text"),
+            )
+        for key, btn in self._pos_buttons.items():
+            active = (key == cfg.pos)
+            btn.configure(
+                fg_color=T("accent") if active else T("button"),
+                hover_color=T("accent_hover") if active else T("button_hover"),
+                text_color=T("accent_fg") if active else T("text"),
             )
         for key, btn in self._cover_buttons.items():
-            active = key == cfg.coverside
+            active = (key == cfg.coverside)
             btn.configure(
-                fg_color=COLORS["accent"] if active else COLORS["button"],
-                hover_color=COLORS["accent_hover"] if active else COLORS["button_hover"],
+                fg_color=T("accent") if active else T("button"),
+                hover_color=T("accent_hover") if active else T("button_hover"),
+                text_color=T("accent_fg") if active else T("text"),
             )
         for color, btn in self._accent_buttons.items():
             active = color.lower() == (cfg.accent or "").lower()
             btn.configure(
-                border_width=2 if active else 0,
-                border_color="#ffffff" if active else COLORS["button"],
+                border_width=2 if active else 1,
+                border_color=T("text") if active else T("border_strong"),
             )
-        self._btn_bg.configure(text=f"背景: {cfg.bg if cfg.bg else '透明'}")
-        self._btn_panel.configure(text=f"面板: {cfg.panel if cfg.panel else '默认'}")
+        self._btn_bg.configure(text=cfg.bg if cfg.bg else "透明")
+        self._btn_panel.configure(text=cfg.panel if cfg.panel else "默认")
+
         font_name = cfg.lyric_font if cfg.lyric_font in self._font_families else "默认"
-        self._lyric_font_name.configure(text=font_name)
-        try:
-            self._lyric_preview.configure(
-                font=ctk.CTkFont(
-                    family="Segoe UI" if font_name == "默认" else font_name,
-                    size=14,
-                )
-            )
-        except Exception:
-            pass
+        self._lyric_font_name.configure(text=font_name[:18])
+
         for key, sw in self._switches.items():
             if getattr(cfg, key):
                 sw.select()
             else:
                 sw.deselect()
+
         self._var_width.set(str(cfg.width or ""))
         self._var_fontsize.set(str(cfg.fontsize or ""))
         self._var_margin.set(str(cfg.margin or ""))
         self._var_radius.set(str(cfg.radius or ""))
         self._var_coverradius.set(str(cfg.coverradius or ""))
+        self._overlay_preview.update_preview(cfg, self._last_snap)
         self._save_overlay()
 
     def _pick_bg(self) -> None:
@@ -1153,7 +1258,287 @@ class App(ctk.CTk):
         if color and color[1]:
             self._set_accent(color[1])
 
-    # ----------------------------------------------------------- actions
+    # ------------------------------------------------------- Font Picker
+
+    def _pick_lyric_font(self) -> None:
+        if self._font_dialog is not None and self._font_dialog.winfo_exists():
+            self._font_dialog.focus()
+            return
+        dlg = ctk.CTkToplevel(self)
+        self._font_dialog = dlg
+        dlg.title("选择歌词字体")
+        dlg.geometry("380x460")
+        dlg.minsize(340, 400)
+        self._set_window_icon(dlg)
+        dlg.configure(fg_color=T("bg"))
+        dlg.transient(self)
+        dlg.grab_set()
+        try:
+            dlg.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        dlg.after(15, lambda: (
+            apply_native_titlebar_theme(dlg, self._ui_mode == "dark"),
+            animate_window_alpha(dlg, 0.0, 1.0, duration_ms=160, steps=8),
+        ))
+
+        search = ctk.CTkEntry(
+            dlg, placeholder_text="搜索本机字体…", height=32, corner_radius=9,
+            fg_color=T("card"), border_color=T("border"),
+            text_color=T("text"), font=self._f_small,
+        )
+        search.pack(fill="x", padx=14, pady=(14, 8))
+
+        list_frame = ctk.CTkFrame(
+            dlg, fg_color=T("card"), corner_radius=12,
+            border_width=1, border_color=T("border"),
+        )
+        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        pal = self._palette
+        listbox = tk.Listbox(
+            list_frame, bg=pal["card"], fg=pal["text"],
+            selectbackground=pal["accent"], selectforeground=pal["accent_fg"],
+            relief="flat", highlightthickness=0,
+            font=("Segoe UI", 10), activestyle="none",
+        )
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        listbox.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        scrollbar.pack(side="right", fill="y", pady=6, padx=(0, 4))
+
+        preview = ctk.CTkLabel(
+            dlg, text="示例歌词 AaBb 中文预览", anchor="w",
+            font=ctk.CTkFont(family="Segoe UI", size=14),
+            text_color=T("text"), fg_color=T("card"), corner_radius=9,
+            padx=10, pady=6,
+        )
+        preview.pack(fill="x", padx=14, pady=(0, 8))
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkButton(
+            btns, text="默认", width=72, height=30, corner_radius=8,
+            command=lambda: self._finish_font_pick(dlg, "默认"),
+            fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), font=self._f_small_bold,
+        ).pack(side="left")
+        ctk.CTkButton(
+            btns, text="确定", width=76, height=30, corner_radius=8,
+            command=lambda: self._font_pick_ok(dlg, listbox),
+            fg_color=T("accent"), hover_color=T("accent_hover"),
+            text_color=T("accent_fg"), font=self._f_small_bold,
+        ).pack(side="right")
+        ctk.CTkButton(
+            btns, text="取消", width=68, height=30, corner_radius=8,
+            command=lambda: self._close_font_dialog(dlg),
+            fg_color=T("button"), hover_color=T("button_hover"),
+            text_color=T("text"), font=self._f_small_bold,
+        ).pack(side="right", padx=(0, 6))
+
+        fonts = [f for f in self._font_families if f != "默认"]
+
+        def refresh(keyword: str = "") -> None:
+            listbox.delete(0, tk.END)
+            kw = keyword.strip().lower()
+            for f in fonts:
+                if kw in f.lower():
+                    listbox.insert(tk.END, f)
+            current = self.server.config.lyric_font
+            if current:
+                for i in range(listbox.size()):
+                    if listbox.get(i) == current:
+                        listbox.selection_clear(0, tk.END)
+                        listbox.selection_set(i)
+                        listbox.see(i)
+                        break
+
+        def on_select(_event) -> None:
+            sel = listbox.curselection()
+            if sel:
+                name = listbox.get(sel[0])
+                try:
+                    preview.configure(font=ctk.CTkFont(family=name, size=14))
+                except Exception:
+                    pass
+
+        search.bind("<KeyRelease>", lambda _e: refresh(search.get()))
+        listbox.bind("<<ListboxSelect>>", on_select)
+        listbox.bind("<Double-Button-1>", lambda _e: self._font_pick_ok(dlg, listbox))
+        dlg.bind("<Return>", lambda _e: self._font_pick_ok(dlg, listbox))
+        dlg.bind("<Escape>", lambda _e: self._close_font_dialog(dlg))
+        dlg.protocol("WM_DELETE_WINDOW", lambda: self._close_font_dialog(dlg))
+        refresh()
+        if self.server.config.lyric_font:
+            search.insert(0, self.server.config.lyric_font)
+        search.focus_set()
+
+    def _font_pick_ok(self, dlg, listbox) -> None:
+        sel = listbox.curselection()
+        if sel:
+            self._finish_font_pick(dlg, listbox.get(sel[0]))
+        else:
+            self._close_font_dialog(dlg)
+
+    def _finish_font_pick(self, dlg, choice: str) -> None:
+        self._on_lyric_font(choice)
+        self._close_font_dialog(dlg)
+
+    def _close_font_dialog(self, dlg) -> None:
+        if self._font_dialog is dlg:
+            self._font_dialog = None
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------ Mobile Companion
+
+    def _lan_ip(self) -> str:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+            finally:
+                s.close()
+        except Exception:
+            return "127.0.0.1"
+
+    def _toggle_mobile(self) -> None:
+        devs = self.server.devices
+        on = bool(self._mobile_switch.get())
+        devs.enabled = on
+        self.settings.mobile_enabled = on
+        self.settings.save()
+        loopback = ("127.0.0.1", "localhost", "::1")
+        if on and self.server.host in loopback:
+            self.server.host = "0.0.0.0"
+            self.server.stop()
+            ok = self.server.start()
+            if not ok:
+                self.server.host = "127.0.0.1"
+                self.server.start()
+        elif not on and self.server.host not in loopback:
+            self.server.host = "127.0.0.1"
+            self.server.stop()
+            self.server.start()
+        self._refresh_mobile_view()
+        self._toast.show("已开启手机连接" if on else "已关闭手机连接", "success" if on else "accent")
+
+    def _mobile_poll(self) -> None:
+        if self._closing:
+            return
+        if self.server.devices.enabled or self._active_tab == "mobile":
+            self._refresh_mobile_view()
+        self.after(2000, self._mobile_poll)
+
+    @staticmethod
+    def _sync_specs(rows: list, specs: list, make_row) -> None:
+        for i, (text, actions) in enumerate(specs):
+            if i >= len(rows):
+                rows.append(make_row())
+            rows[i].update(text, actions)
+            rows[i].show(True)
+        for row in rows[len(specs):]:
+            row.show(False)
+
+    @staticmethod
+    def _sync_placeholder(label, visible: bool) -> None:
+        if label is None:
+            return
+        packed = bool(label.winfo_manager())
+        if visible and not packed:
+            label.pack(anchor="w", padx=4, pady=4)
+        elif not visible and packed:
+            label.pack_forget()
+
+    def _refresh_mobile_view(self) -> None:
+        devs = self.server.devices
+        if bool(self._mobile_switch.get()) != devs.enabled:
+            if devs.enabled:
+                self._mobile_switch.select()
+            else:
+                self._mobile_switch.deselect()
+        url = f"http://{self._lan_ip()}:{self.server.port}/m"
+        if url != self._mobile_url_text:
+            self._mobile_url_text = url
+            self.lbl_mobile_url.configure(text=url)
+
+        pending = devs.pending() if devs.enabled else []
+        approved = devs.approved() if devs.enabled else []
+        self._tab_bar.set_badge("mobile", len(pending))
+
+        hint = (
+            "Safari「分享 → 添加到主屏幕」即可全屏使用。"
+            if devs.enabled
+            else "手机连接已关闭。开启后首次访问需在此点击「同意」。"
+        )
+        if self.lbl_mobile_hint.cget("text") != hint:
+            self.lbl_mobile_hint.configure(text=hint)
+
+        pending_specs = [
+            (
+                f"{dev.get('name', '?')} ({dev.get('id', '')[:8]})",
+                [
+                    ("同意", lambda d=dev: self._device_action("approve", d["id"]),
+                     T("accent"), T("accent_hover"), T("accent_fg")),
+                    ("拒绝", lambda d=dev: self._device_action("reject", d["id"]),
+                     T("button"), T("button_hover"), T("text")),
+                ],
+            )
+            for dev in pending
+        ]
+        approved_specs = [
+            (
+                f"{dev.get('name', '?')} ({dev.get('id', '')[:8]})",
+                [
+                    ("移除", lambda d=dev: self._device_action("remove", d["id"]),
+                     T("danger_soft"), T("button_hover"), T("danger")),
+                ],
+            )
+            for dev in approved
+        ]
+        self._sync_specs(
+            self._pending_rows, pending_specs,
+            lambda: _DeviceRow(self.mobile_pending, self._f_caption),
+        )
+        self._sync_specs(
+            self._approved_rows, approved_specs,
+            lambda: _DeviceRow(self.mobile_approved, self._f_caption),
+        )
+        self._sync_placeholder(self.lbl_no_pending, not pending_specs)
+        self._sync_placeholder(self.lbl_no_approved, not approved_specs)
+
+    def _device_action(self, action: str, device_id: str) -> None:
+        devs = self.server.devices
+        if action == "approve":
+            devs.approve(device_id)
+            self._toast.show("已授权该设备", "success")
+        elif action == "reject":
+            devs.reject(device_id)
+            self._toast.show("已拒绝设备请求", "warning")
+        elif action == "remove":
+            devs.remove(device_id)
+            self._toast.show("已移除设备授权", "accent")
+        self._refresh_mobile_view()
+
+    # ------------------------------------------------------- Runtime Actions
+
+    def _toggle_floating(self) -> None:
+        if self._floating is not None and getattr(self._floating, "closed", False) is False:
+            self._floating.close(animated=True)
+            self._floating = None
+            self._sync_quick_dock()
+            self._toast.show("已关闭桌面悬浮窗", "accent")
+            return
+        from .floating import FloatingOverlay
+
+        self._floating = FloatingOverlay(
+            self, self.state_hub, self.cover_store, self.server.config,
+            self.refresh_ms, self.settings, self.client,
+        )
+        self._sync_quick_dock()
+        self._toast.show("已打开桌面悬浮窗 (Ctrl+Shift+L 锁定)", "success")
 
     def _cmd(self, cmd: int) -> None:
         try:
@@ -1163,48 +1548,110 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _on_seek(self, ratio: float) -> None:
+        snap = self._last_snap
+        if not snap or not snap.get("duration_ms"):
+            return
+        target_ms = int(snap["duration_ms"] * ratio)
+        self._anchor_pos = target_ms
+        self._anchor_wall = time.time()
+        self.lbl_time_cur.configure(text=format_time(target_ms))
+        if self._demo_active:
+            return
+        try:
+            if self.client.connected:
+                self.client.set_property(PROP_PLAYER_POSITION, target_ms)
+        except Exception:
+            pass
+
+    def _save_runtime_settings(self, _event=None) -> None:
+        try:
+            self.settings.port = int(self.var_port.get())
+        except ValueError:
+            pass
+        try:
+            self.settings.refresh_ms = max(100, int(self.var_refresh.get()))
+        except ValueError:
+            pass
+        try:
+            new_dir = Path(self.var_export.get().strip() or str(self.export_dir))
+            if new_dir != self.export_dir:
+                self.export_dir = new_dir
+                if self.state_hub.exporter:
+                    self.state_hub.exporter = type(self.state_hub.exporter)(self.export_dir)
+        except Exception:
+            pass
+        self.settings.export_dir = str(self.export_dir)
+        try:
+            self.settings.save()
+        except Exception:
+            pass
+
     def _toggle_server(self) -> None:
         if self.server.running:
             self.server.stop()
-            if hasattr(self, "btn_server"):
-                self.btn_server.configure(text="启动服务")
-            if hasattr(self, "btn_service"):
-                self.btn_service.configure(text="▶ 启动服务")
-            if hasattr(self, "lbl_hint"):
-                self.lbl_hint.configure(text="服务已停止。")
+            self._sync_server_ui()
+            self._toast.show("HTTP 服务已停止", "warning")
             return
-        if hasattr(self, "var_port"):
-            try:
-                port = int(self.var_port.get())
-            except ValueError:
-                messagebox.showerror("端口无效", "请输入 1-65535 之间的端口号。")
-                return
-            if not 1 <= port <= 65535:
-                messagebox.showerror("端口无效", "端口必须在 1-65535 之间。")
-                return
-            self.server.port = port
+        try:
+            port = int(self.var_port.get())
+        except ValueError:
+            messagebox.showerror("端口无效", "请输入 1-65535 之间的端口号。")
+            return
+        if not 1 <= port <= 65535:
+            messagebox.showerror("端口无效", "端口必须在 1-65535 之间。")
+            return
+        self.server.port = port
         if self.server.start():
-            if hasattr(self, "var_port"):
-                self.var_port.set(str(self.server.port))
-            if hasattr(self, "btn_server"):
-                self.btn_server.configure(text="停止服务")
-            if hasattr(self, "btn_service"):
-                self.btn_service.configure(text="⏹ 停止服务")
-            if hasattr(self, "lbl_hint"):
-                self.lbl_hint.configure(text=f"OBS 浏览器源地址: {self.server.url}")
+            self.var_port.set(str(self.server.port))
             self._save_runtime_settings()
+            self._sync_server_ui()
+            self._toast.show(f"服务已启动：{self.server.url}", "success")
         else:
             messagebox.showerror("启动失败", "端口被占用，请换一个端口。")
+
+    def _sync_server_ui(self) -> None:
+        running = self.server.running
+        url = self.server.url if running else f"http://127.0.0.1:{self.var_port.get()}/"
+        if self._last_ui.get("server_running") == (running, url):
+            return
+        self._last_ui["server_running"] = (running, url)
+        self.lbl_obs_url.configure(text=url)
+        self.btn_server.configure(text="停止服务" if running else "启动服务")
+        if running:
+            self.btn_service_pill.configure(
+                text=f" :{self.server.port}",
+                image=self._ico_power_on,
+                fg_color=T("success_soft"),
+                text_color=T("success"),
+            )
+        else:
+            self.btn_service_pill.configure(
+                text=" 已停止",
+                image=self._ico_power_off,
+                fg_color=T("card_alt"),
+                text_color=T("text_muted"),
+            )
 
     def _copy_url(self) -> None:
         url = self.server.url if self.server.running else f"http://127.0.0.1:{self.var_port.get()}/"
         self.clipboard_clear()
         self.clipboard_append(url)
-        self.lbl_hint.configure(text=f"已复制: {url}")
+        self._toast.show(f"已复制：{url}", "success")
+
+    def _copy_mobile_url(self) -> None:
+        url = f"http://{self._lan_ip()}:{self.server.port}/m"
+        self.clipboard_clear()
+        self.clipboard_append(url)
+        self._toast.show(f"已复制：{url}", "success")
 
     def _open_browser(self) -> None:
         url = self.server.url if self.server.running else f"http://127.0.0.1:{self.var_port.get()}/"
         os.startfile(url)
+
+    def _open_preview_gallery(self) -> None:
+        base = self.server.url if self.server.running else f"http://127.0.0.1:{self.var_port.get()}/"
+        os.startfile(base.rstrip("/") + "/preview")
 
     def _choose_export(self) -> None:
         chosen = filedialog.askdirectory(initialdir=str(self.export_dir))
@@ -1214,8 +1661,16 @@ class App(ctk.CTk):
             if self.state_hub.exporter:
                 self.state_hub.exporter = type(self.state_hub.exporter)(self.export_dir)
             self._save_runtime_settings()
+            self._toast.show("已更新导出目录", "success")
 
-    # -------------------------------------------------------------- poll
+    def _open_export_dir(self) -> None:
+        try:
+            self.export_dir.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(self.export_dir))
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------- Poll Loop
 
     def _poll(self) -> None:
         if self._closing:
@@ -1249,99 +1704,110 @@ class App(ctk.CTk):
             return
         if self._is_minimized():
             self._minimize_to_tray()
+        if self._floating is not None and getattr(self._floating, "closed", False):
+            self._floating = None
+            self._sync_quick_dock()
+
         snap = self._last_snap
         if snap and snap.get("state") == "playing" and snap.get("duration_ms"):
             est = self._anchor_pos + (time.time() - self._anchor_wall) * 1000
             duration = snap["duration_ms"]
-            if est <= duration:
-                self.progress.set(est / duration)
-                text = f"{format_time(int(est))} / {snap.get('duration', '0:00')}"
-                if text != self._last_time_text:
-                    self._last_time_text = text
-                    self.lbl_time.configure(text=text)
-        self.after(100, self._tick)
+            if 0 <= est <= duration:
+                self._progress_bar.set_progress(est / duration)
+                cur_txt = format_time(int(est))
+                if cur_txt != self._last_time_cur:
+                    self._last_time_cur = cur_txt
+                    self.lbl_time_cur.configure(text=cur_txt)
+        self.after(90, self._tick)
 
     def _update_ui(self, s: dict) -> None:
         state = s.get("state")
         self._anchor_pos = int(s.get("position_ms", 0))
         self._anchor_wall = time.time()
-        self._anchor_playing = state == "playing"
+        self._anchor_playing = (state == "playing")
 
         def set_label(key: str, widget, text: str, **kw) -> None:
-            if self._last_ui.get(key) != text:
-                self._last_ui[key] = text
+            sig = (text, kw.get("text_color"))
+            if self._last_ui.get(key) != sig:
+                self._last_ui[key] = sig
                 widget.configure(text=text, **kw)
 
-        set_label("title", self.lbl_title, s.get("title") or "—")
+        title = s.get("title") or "未在播放"
+        set_label("title", self.lbl_title, title)
         artist_album = " · ".join(x for x in (s.get("artist"), s.get("album")) if x)
-        set_label("artist", self.lbl_artist, artist_album or "未知艺术家")
+        if not s.get("connected") and not self._demo_active:
+            artist_text = "请启动 AIMP，或点击右上角「演示」体验"
+        else:
+            artist_text = artist_album or "未知艺术家"
+        set_label("artist", self.lbl_artist, artist_text)
+
         genre_year = " · ".join(x for x in (s.get("genre"), s.get("year")) if x)
-        set_label("meta", self.lbl_meta, genre_year or "暂无专辑信息")
-        set_label("aimp", self.lbl_aimp, s.get("aimp_version") or "")
+        set_label("meta", self.lbl_meta, genre_year or ("演示模式" if self._demo_active else "AIMP"))
 
         if s.get("connected"):
             if state == "playing":
-                set_label("badge", self.lbl_badge, "● 播放中", text_color=COLORS["green"])
+                set_label("badge", self.lbl_badge, "播放中", text_color=T("success"))
+                self._status_dot.set_status("success", True)
             elif state == "paused":
-                set_label("badge", self.lbl_badge, "● 已暂停", text_color=COLORS["yellow"])
+                set_label("badge", self.lbl_badge, "已暂停", text_color=T("warning"))
+                self._status_dot.set_status("warning", False)
             else:
-                set_label("badge", self.lbl_badge, "● 未在播放", text_color=COLORS["dim"])
+                set_label("badge", self.lbl_badge, "已就绪", text_color=T("text_secondary"))
+                self._status_dot.set_status("text_muted", False)
         else:
-            set_label("badge", self.lbl_badge, "● 未连接", text_color=COLORS["red"])
+            set_label("badge", self.lbl_badge, "未连接", text_color=T("danger"))
+            self._status_dot.set_status("danger", False)
+
+        is_playing = (state == "playing")
+        self._equalizer.set_playing(is_playing)
+        self._cover_stage.set_playing(is_playing)
+        self._progress_bar.set_playing(is_playing)
+        if is_playing != self._is_playing_icon:
+            self._is_playing_icon = is_playing
+            self.btn_play.configure(image=self._ico_pause if is_playing else self._ico_play)
 
         progress = int((s.get("progress") or 0.0) * 1000)
         if progress != self._last_progress:
             self._last_progress = progress
-            self.progress.set(progress / 1000)
-        set_label("time", self.lbl_time, f"{s.get('position')} / {s.get('duration')}")
+            self._progress_bar.set_progress(progress / 1000.0)
+        cur_txt = s.get("position") or "0:00"
+        dur_txt = s.get("duration") or "0:00"
+        if cur_txt != self._last_time_cur:
+            self._last_time_cur = cur_txt
+            self.lbl_time_cur.configure(text=cur_txt)
+        if dur_txt != self._last_time_dur:
+            self._last_time_dur = dur_txt
+            self.lbl_time_dur.configure(text=dur_txt)
 
         cover_ts = s.get("cover_ts", 0)
         if cover_ts != self._cover_ts:
-            image = self._rounded_cover(128, 22, blocking=False)
-            if image is not None:  # artwork still decoding -> retry on the next poll
+            pil_img = self.cover_store.rounded_image(118, 18, blocking=False)
+            if pil_img is not None:
+                animate = (self._cover_ts != -1)
                 self._cover_ts = cover_ts
-                self._cover_image = image
-                self.lbl_cover.configure(image=image)
+                self._cover_stage.set_cover(pil_img, animate=animate)
 
         cur = s.get("lyrics_current") or ""
         nxt = s.get("lyrics_next") or ""
         full = s.get("lyrics_full") or []
         if s.get("lyrics_synced"):
-            set_label("lyric_cur", self.lbl_lyric, cur or "（纯音乐 / 本句无歌词）")
-            set_label("lyric_next", self.lbl_lyric_next, nxt)
+            self._lyrics_stage.set_lyrics(cur or "（纯音乐 / 间奏中）", nxt, True)
+            set_label("lyr_badge", self.lbl_lyric_badge, "LRC 同步", text_color=T("accent"))
         elif full:
-            set_label("lyric_cur", self.lbl_lyric, "\n".join(full[-4:]))
-            set_label("lyric_next", self.lbl_lyric_next, "")
+            self._lyrics_stage.set_lyrics("\n".join(full[-2:]), "", False)
+            set_label("lyr_badge", self.lbl_lyric_badge, "纯文本", text_color=T("text_secondary"))
         else:
-            set_label("lyric_cur", self.lbl_lyric, "暂无歌词")
-            set_label("lyric_next", self.lbl_lyric_next, "")
+            self._lyrics_stage.set_lyrics("暂无歌词", "支持同名 .lrc 与音频内嵌歌词", False)
+            set_label("lyr_badge", self.lbl_lyric_badge, "无歌词", text_color=T("text_muted"))
 
-        if self.server.running:
-            set_label("server_state", self.lbl_server_state, self.server.url)
-            if hasattr(self, "btn_service"):
-                self.btn_service.configure(text="⏹ 停止服务")
-        else:
-            set_label("server_state", self.lbl_server_state, "服务未启动")
-            if hasattr(self, "btn_service"):
-                self.btn_service.configure(text="▶ 启动服务")
+        if self._active_tab == "overlay" and not self._curtain.active:
+            self._overlay_preview.update_preview(self.server.config, s)
 
-    def _rounded_cover(self, size: int, radius: int, blocking: bool = True):
-        """Rounded cover thumbnail; the store caches decode/resize per cover revision."""
-        img = self.cover_store.rounded_image(size, radius, blocking)
-        if img is None:
-            if not blocking:
-                return None
-            img = Image.new("RGBA", (size, size), (36, 42, 56, 255))
-        return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+        self._sync_server_ui()
 
-    # ---------------------------------------------------------- minimize to tray
+    # ------------------------------------------------------ Minimize to Tray
 
     def _is_minimized(self) -> bool:
-        """True while the window is minimised.
-
-        A title-bar (or taskbar) minimise does not surface as Tk's ``<Unmap>`` on Windows, so ask
-        Win32 as well as Tk.
-        """
         try:
             if self.state() == "iconic":
                 return True
@@ -1356,14 +1822,20 @@ class App(ctk.CTk):
         if self._closing or self._in_tray or not self._is_minimized():
             return
         if not self._ensure_tray().show("已最小化到托盘，双击图标恢复窗口"):
-            return  # no notification area (shell gone): keep the normal minimised window
+            return
         self._in_tray = True
-        self.withdraw()  # also removes the taskbar button
+        self.withdraw()
+        if self._floating is not None and not getattr(self._floating, "closed", False):
+            self.after(25, self._floating.ensure_visible_no_taskbar)
 
     def _restore_from_tray(self) -> None:
         if self._tray is not None:
             self._tray.hide()
         self._in_tray = False
+        try:
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         self.deiconify()
         self.state("normal")
         self.lift()
@@ -1371,6 +1843,7 @@ class App(ctk.CTk):
             self.focus_force()
         except tk.TclError:
             pass
+        animate_window_alpha(self, 0.0, 1.0, duration_ms=180, steps=10)
 
     def _ensure_tray(self) -> TrayIcon:
         if self._tray is None:
@@ -1384,10 +1857,16 @@ class App(ctk.CTk):
 
     def _on_close(self) -> None:
         self._closing = True
+        self._curtain.destroy()
         if self._tray is not None:
             self._tray.stop()
             self._tray = None
-        self._close_settings_window()
+        if self._font_dialog is not None and self._font_dialog.winfo_exists():
+            try:
+                self._font_dialog.destroy()
+            except Exception:
+                pass
+            self._font_dialog = None
         if self._floating is not None:
             self._floating.close()
             self._floating = None

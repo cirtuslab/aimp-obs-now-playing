@@ -26,6 +26,7 @@ class SettingsStore:
         self.export_dir: str = ""
         self.floating_lyric_font_anim: bool = True
         self.mobile_enabled: bool = False
+        self.ui_theme: str = "dark"
         self.overlay = OverlayConfig()
         self.load()
 
@@ -51,6 +52,9 @@ class SettingsStore:
             self.floating_lyric_font_anim = data["floating_lyric_font_anim"]
         if isinstance(data.get("mobile_enabled"), bool):
             self.mobile_enabled = data["mobile_enabled"]
+        ui_theme = data.get("ui_theme")
+        if isinstance(ui_theme, str) and ui_theme.strip().lower() in ("dark", "light"):
+            self.ui_theme = ui_theme.strip().lower()
         overlay_data = data.get("overlay")
         if isinstance(overlay_data, dict):
             self.overlay.update_from_dict(overlay_data)
@@ -62,6 +66,7 @@ class SettingsStore:
             "export_dir": self.export_dir,
             "floating_lyric_font_anim": self.floating_lyric_font_anim,
             "mobile_enabled": self.mobile_enabled,
+            "ui_theme": self.ui_theme,
             "overlay": self.overlay.to_dict(),
         }
         try:
