@@ -740,12 +740,10 @@ def render_icon_image(name: str, color: str, size: int = 18) -> Image.Image:
         d.line([(s * 0.27, s * 0.16), (s * 0.66, s * 0.16)], fill=rgb, width=sw)
         d.line([(s * 0.18, s * 0.25), (s * 0.18, s * 0.68)], fill=rgb, width=sw)
     elif name == "external":
-        r = max(2, round(1.6 * scale))
         d.line([(s * 0.54, s * 0.20), (s * 0.82, s * 0.20), (s * 0.82, s * 0.48)], fill=rgb, width=sw)
         d.line([(s * 0.44, s * 0.56), (s * 0.80, s * 0.20)], fill=rgb, width=sw)
         d.line([(s * 0.42, s * 0.26), (s * 0.20, s * 0.26), (s * 0.20, s * 0.80), (s * 0.74, s * 0.80), (s * 0.74, s * 0.58)], fill=rgb, width=sw)
     elif name == "folder":
-        r = max(2, round(1.8 * scale))
         d.polygon([
             (s * 0.14, s * 0.26), (s * 0.42, s * 0.26),
             (s * 0.50, s * 0.35), (s * 0.86, s * 0.35),

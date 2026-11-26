@@ -138,6 +138,7 @@ class FloatingOverlay:
         try:
             self.win.attributes("-alpha", 0.0)
         except tk.TclError:
+            # Skip fade-in start if the platform does not support window alpha.
             pass
         self.win.configure(bg=TRANSPARENT)
         self.canvas = tk.Canvas(self.win, bg=TRANSPARENT, highlightthickness=0, bd=0)
@@ -170,6 +171,7 @@ class FloatingOverlay:
             self.win.attributes("-topmost", True)
             self.win.lift()
         except Exception:
+            # Window may already be closing or destroyed during tray transition.
             pass
 
     def _animate_open(self) -> None:
@@ -853,6 +855,7 @@ class FloatingOverlay:
                 if self.win.winfo_exists():
                     self.win.destroy()
             except tk.TclError:
+                # Ignore if the Tk window was already torn down by its parent.
                 pass
 
         if animated:

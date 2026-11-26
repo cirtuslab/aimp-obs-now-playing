@@ -19,7 +19,6 @@ from tkinter import colorchooser, filedialog, font as tkfont, messagebox
 from typing import Dict, Optional, Tuple
 
 import customtkinter as ctk
-from PIL import Image
 
 from .aimp_api import (
     CMD_NEXT,
