@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import time
 import tkinter as tk
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
