@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import math
+import sys
 import time
 from typing import Dict, Optional, Tuple
 
@@ -797,3 +798,242 @@ class IconCache:
 
     def solid(self, name: str, color: str, size: int = 18):
         return self.get(name, color, color, size)
+
+
+# ------------------------------------------------ WebView / Win11 Helpers
+
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWA_BORDER_COLOR = 34
+DWMWCP_ROUND = 2
+
+
+def apply_win11_frameless_style(hwnd: int, dark: bool = True) -> None:
+    """Apply Windows 11 native rounded corners, dark mode, and subtle border to an HWND."""
+    if sys.platform != "win32" or not hwnd:
+        return
+    try:
+        dwmapi = ctypes.WinDLL("dwmapi")
+        dwmapi.DwmSetWindowAttribute.argtypes = [
+            wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD,
+        ]
+        dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+
+        corner = ctypes.c_int(DWMWCP_ROUND)
+        dwmapi.DwmSetWindowAttribute(
+            int(hwnd), DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(corner), ctypes.sizeof(corner),
+        )
+        dark_val = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):
+            res = dwmapi.DwmSetWindowAttribute(
+                int(hwnd), attr, ctypes.byref(dark_val), ctypes.sizeof(dark_val),
+            )
+            if res == 0:
+                break
+        border = ctypes.c_uint32(hex_to_colorref("#22283A" if dark else "#CBD5E1"))
+        dwmapi.DwmSetWindowAttribute(
+            int(hwnd), DWMWA_BORDER_COLOR,
+            ctypes.byref(border), ctypes.sizeof(border),
+        )
+    except Exception:
+        # Older Windows 10 builds do not support Win11 corner/border attributes.
+        pass
+
+
+def extract_cover_palette(image_bytes: bytes) -> Dict[str, str]:
+    """Extract a 3-color ambient palette (primary, secondary, glow) from album art bytes."""
+    default = {"primary": "#FF9F19", "secondary": "#38BDF8", "glow": "#A855F7"}
+    if not image_bytes:
+        return default
+    try:
+        import io
+
+        with Image.open(io.BytesIO(image_bytes)) as raw:
+            small = raw.convert("RGB").resize((36, 36), Image.BILINEAR)
+            pixels = list(getattr(small, "get_flattened_data", small.getdata)())
+    except Exception:
+        return default
+
+    # Bucket pixels into 12 hue sectors weighted by saturation & perceptual vibrancy.
+    buckets: Dict[int, list] = {}
+    for r, g, b in pixels:
+        mx, mn = max(r, g, b), min(r, g, b)
+        sat = (mx - mn) / mx if mx > 0 else 0.0
+        lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
+        if sat < 0.18 or lum < 0.14 or lum > 0.90:
+            continue
+        # Hue approximation 0..360
+        delta = mx - mn
+        if delta == 0:
+            hue = 0.0
+        elif mx == r:
+            hue = 60.0 * (((g - b) / delta) % 6)
+        elif mx == g:
+            hue = 60.0 * (((b - r) / delta) + 2)
+        else:
+            hue = 60.0 * (((r - g) / delta) + 4)
+        sector = int(hue // 30) % 12
+        weight = (sat ** 1.35) * (1.0 - abs(lum - 0.54))
+        buckets.setdefault(sector, [0.0, 0.0, 0.0, 0.0])
+        bkt = buckets[sector]
+        bkt[0] += weight
+        bkt[1] += r * weight
+        bkt[2] += g * weight
+        bkt[3] += b * weight
+
+    if not buckets:
+        return default
+
+    ranked = sorted(buckets.items(), key=lambda kv: kv[1][0], reverse=True)
+
+    def _to_vibrant(bkt: list) -> str:
+        w = max(bkt[0], 1e-6)
+        r = int(clamp(bkt[1] / w, 0, 255))
+        g = int(clamp(bkt[2] / w, 0, 255))
+        b = int(clamp(bkt[3] / w, 0, 255))
+        # Lift very dark hues gently so they shine on obsidian surfaces
+        if max(r, g, b) < 155:
+            boost = 175.0 / max(1, max(r, g, b))
+            r = int(clamp(r * boost, 0, 255))
+            g = int(clamp(g * boost, 0, 255))
+            b = int(clamp(b * boost, 0, 255))
+        return rgb_to_hex(r, g, b)
+
+    primary = _to_vibrant(ranked[0][1])
+    sec_sector = ranked[0][0]
+    secondary = None
+    glow = None
+    for sec, bkt in ranked[1:]:
+        dist = min((sec - sec_sector) % 12, (sec_sector - sec) % 12)
+        if secondary is None and dist >= 2:
+            secondary = _to_vibrant(bkt)
+        elif glow is None and dist >= 1:
+            glow = _to_vibrant(bkt)
+        if secondary and glow:
+            break
+    if secondary is None:
+        secondary = blend_hex(primary, "#38BDF8", 0.45)
+    if glow is None:
+        glow = blend_hex(primary, "#C084FC", 0.50)
+    return {"primary": primary, "secondary": secondary, "glow": glow}
+
+
+def enumerate_system_fonts() -> list:
+    """Return sorted installed font family names using Win32 GDI (zero Tk dependency)."""
+    if sys.platform != "win32":
+        return ["Segoe UI", "Microsoft YaHei UI", "Consolas"]
+    try:
+        LF_FACESIZE = 32
+        DEFAULT_CHARSET = 1
+
+        class LOGFONTW(ctypes.Structure):
+            _fields_ = [
+                ("lfHeight", wt.LONG),
+                ("lfWidth", wt.LONG),
+                ("lfEscapement", wt.LONG),
+                ("lfOrientation", wt.LONG),
+                ("lfWeight", wt.LONG),
+                ("lfItalic", wt.BYTE),
+                ("lfUnderline", wt.BYTE),
+                ("lfStrikeOut", wt.BYTE),
+                ("lfCharSet", wt.BYTE),
+                ("lfOutPrecision", wt.BYTE),
+                ("lfClipPrecision", wt.BYTE),
+                ("lfQuality", wt.BYTE),
+                ("lfPitchAndFamily", wt.BYTE),
+                ("lfFaceName", wt.WCHAR * LF_FACESIZE),
+            ]
+
+        class ENUMLOGFONTEXW(ctypes.Structure):
+            _fields_ = [
+                ("elfLogFont", LOGFONTW),
+                ("elfFullName", wt.WCHAR * 64),
+                ("elfStyle", wt.WCHAR * 32),
+                ("elfScript", wt.WCHAR * 32),
+            ]
+
+        FONTENUMPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_int,
+            ctypes.POINTER(ENUMLOGFONTEXW),
+            ctypes.c_void_p,
+            wt.DWORD,
+            wt.LPARAM,
+        )
+
+        u32 = ctypes.WinDLL("user32")
+        g32 = ctypes.WinDLL("gdi32")
+        u32.GetDC.argtypes = [wt.HWND]
+        u32.GetDC.restype = wt.HDC
+        u32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+        g32.EnumFontFamiliesExW.argtypes = [
+            wt.HDC, ctypes.POINTER(LOGFONTW), FONTENUMPROC, wt.LPARAM, wt.DWORD,
+        ]
+        g32.EnumFontFamiliesExW.restype = ctypes.c_int
+
+        names = set()
+
+        def _cb(lpelfe, _lpntme, _font_type, _lparam) -> int:
+            face = lpelfe.contents.elfLogFont.lfFaceName
+            if face and not face.startswith("@"):
+                names.add(face)
+            return 1
+
+        hdc = u32.GetDC(None)
+        if not hdc:
+            return ["Segoe UI", "Microsoft YaHei UI"]
+        try:
+            lf = LOGFONTW()
+            lf.lfCharSet = DEFAULT_CHARSET
+            proc = FONTENUMPROC(_cb)
+            g32.EnumFontFamiliesExW(hdc, ctypes.byref(lf), proc, 0, 0)
+        finally:
+            u32.ReleaseDC(None, hdc)
+        return sorted(names)
+    except Exception:
+        return ["Segoe UI", "Microsoft YaHei UI", "Consolas"]
+
+
+def copy_to_clipboard_win32(text: str) -> bool:
+    """Copy UTF-16 text to the Windows clipboard via Win32 ctypes."""
+    if sys.platform != "win32":
+        return False
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    try:
+        u32 = ctypes.WinDLL("user32")
+        k32 = ctypes.WinDLL("kernel32")
+        u32.OpenClipboard.argtypes = [wt.HWND]
+        u32.OpenClipboard.restype = wt.BOOL
+        u32.EmptyClipboard.restype = wt.BOOL
+        u32.SetClipboardData.argtypes = [wt.UINT, wt.HANDLE]
+        u32.SetClipboardData.restype = wt.HANDLE
+        u32.CloseClipboard.restype = wt.BOOL
+        k32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+        k32.GlobalAlloc.restype = wt.HGLOBAL
+        k32.GlobalLock.argtypes = [wt.HGLOBAL]
+        k32.GlobalLock.restype = ctypes.c_void_p
+        k32.GlobalUnlock.argtypes = [wt.HGLOBAL]
+        k32.GlobalFree.argtypes = [wt.HGLOBAL]
+
+        raw = (text or "").encode("utf-16-le") + b"\x00\x00"
+        if not u32.OpenClipboard(None):
+            return False
+        try:
+            u32.EmptyClipboard()
+            hmem = k32.GlobalAlloc(GMEM_MOVEABLE, len(raw))
+            if not hmem:
+                return False
+            ptr = k32.GlobalLock(hmem)
+            if not ptr:
+                k32.GlobalFree(hmem)
+                return False
+            ctypes.memmove(ptr, raw, len(raw))
+            k32.GlobalUnlock(hmem)
+            if not u32.SetClipboardData(CF_UNICODETEXT, hmem):
+                k32.GlobalFree(hmem)
+                return False
+            return True
+        finally:
+            u32.CloseClipboard()
+    except Exception:
+        return False

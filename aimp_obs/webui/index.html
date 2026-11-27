@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AIMP Prism Deck</title>
+  <style>/*__PRISM_CSS__*/</style>
+</head>
+<body>
+  <!-- Full-bleed dynamic aurora backdrop driven by live album art colors -->
+  <div class="aurora-stage" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="cursor-spotlight"></div>
+    <div class="grain-layer"></div>
+  </div>
+
+  <!-- Particle burst overlay for tactile button clicks -->
+  <canvas id="fxCanvas" class="fx-canvas" aria-hidden="true"></canvas>
+
+  <!-- Main Glass Frame -->
+  <div class="app-shell">
+    <!-- Frameless Top Bar (draggable) -->
+    <header class="titlebar pywebview-drag-region">
+      <div class="tb-left">
+        <div class="brand-prism" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <polygon points="12,2.5 21.5,19.5 2.5,19.5" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <polygon points="12,8.5 16.5,16.5 7.5,16.5" fill="currentColor" opacity="0.88"/>
+          </svg>
+        </div>
+        <span class="brand-name">AIMP <span class="brand-sub">PRISM</span></span>
+        <div id="statusPill" class="status-pill offline">
+          <span class="pulse-ring"></span>
+          <span id="statusText">未连接</span>
+        </div>
+      </div>
+
+      <div class="tb-right no-drag">
+        <button id="chipFloat" class="quick-chip" title="桌面悬浮窗 (F)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="4" width="18" height="16" rx="3"/>
+            <rect x="12" y="11" width="6.5" height="6" rx="1.4" fill="currentColor" stroke="none"/>
+          </svg>
+          <span>悬浮窗</span>
+        </button>
+
+        <button id="chipDemo" class="quick-chip" title="演示模式 (D)">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2.2l2.2 6.4 6.4 2.2-6.4 2.2L12 19.4l-2.2-6.4-6.4-2.2 6.4-2.2z"/>
+          </svg>
+          <span>演示</span>
+        </button>
+
+        <button id="chipServer" class="quick-chip server-chip" title="OBS 本地服务状态">
+          <span class="srv-dot"></span>
+          <span id="chipServerText">:8765</span>
+        </button>
+
+        <button id="btnTheme" class="icon-orb" title="切换暗色 / 亮色模式 (T)">
+          <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2.4M12 19.6V22M4.93 4.93l1.7 1.7M17.37 17.37l1.7 1.7M2 12h2.4M19.6 12H22M4.93 19.07l1.7-1.7M17.37 6.63l1.7-1.7"/>
+          </svg>
+          <svg class="ico-moon" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+          </svg>
+        </button>
+
+        <div class="win-controls">
+          <button id="btnMin" class="win-btn" title="最小化到系统托盘">
+            <svg viewBox="0 0 12 12"><line x1="2" y1="6.5" x2="10" y2="6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button id="btnClose" class="win-btn close" title="退出程序">
+            <svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- View Stage Container (3D depth blur morph between views) -->
+    <main class="views-host">
+
+      <!-- ==================== VIEW 1: HOLOGRAPHIC VINYL STAGE ==================== -->
+      <section id="view-stage" class="view active" data-view="stage">
+        <div class="stage-grid">
+          <!-- Left Wing: 64-band Radial Spectrum + Interactive 3D Vinyl Turntable -->
+          <div class="vinyl-wing">
+            <canvas id="spectrumCanvas" class="spectrum-canvas"></canvas>
+
+            <div id="turntableTilt" class="turntable-tilt">
+              <!-- Slide-out Spinning Vinyl Record -->
+              <div id="vinylDisc" class="vinyl-disc">
+                <div class="vinyl-grooves"></div>
+                <div class="vinyl-sheen"></div>
+                <div class="vinyl-label">
+                  <img id="vinylCenterArt" alt="" />
+                  <span class="vinyl-spindle"></span>
+                </div>
+              </div>
+
+              <!-- 3D Album Sleeve with Holographic Foil Glare -->
+              <div class="sleeve-frame">
+                <img id="coverImg" class="cover-img" alt="Album Cover" />
+                <div class="sleeve-gloss"></div>
+                <div class="sleeve-holo"></div>
+                <div class="sleeve-rim"></div>
+              </div>
+
+              <!-- Articulated Metallic Tonearm -->
+              <div id="tonearm" class="tonearm" aria-hidden="true">
+                <div class="tonearm-base"></div>
+                <div class="tonearm-rod"></div>
+                <div class="tonearm-head"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Wing: Kinetic Typography + Live Lyrics + Liquid Seek + Magnetic Transport -->
+          <div class="info-wing">
+            <div class="track-header">
+              <div class="meta-chips">
+                <span id="metaTag" class="meta-tag">AIMP STUDIO</span>
+                <span id="lyricBadge" class="lyric-tag">等待歌词</span>
+              </div>
+              <h1 id="trackTitle" class="track-title">等待音乐信号</h1>
+              <p id="trackArtist" class="track-artist">请启动 AIMP，或点击右上角「演示」体验全息动效</p>
+            </div>
+
+            <!-- Live Depth-of-Field Kinetic Lyrics Stage -->
+            <div class="lyrics-viewport">
+              <div id="lyricPrev" class="lyric-line prev"></div>
+              <div id="lyricCur" class="lyric-line current">暂无实时歌词</div>
+              <div id="lyricNext" class="lyric-line next">支持同名 .lrc 与音频内嵌歌词</div>
+            </div>
+
+            <!-- Liquid Shimmer Progress Bar -->
+            <div class="seek-block">
+              <div id="seekTrack" class="seek-track" role="slider" aria-label="播放进度">
+                <div id="seekHoverTip" class="seek-tip">0:00</div>
+                <div class="seek-bg"></div>
+                <div id="seekFill" class="seek-fill">
+                  <span class="seek-shimmer"></span>
+                </div>
+                <div id="seekThumb" class="seek-thumb"></div>
+              </div>
+              <div class="seek-times">
+                <span id="timeCur">0:00</span>
+                <span id="timeDur">0:00</span>
+              </div>
+            </div>
+
+            <!-- Magnetic Transport Controls -->
+            <div class="transport-bar">
+              <button id="btnPrev" class="mag-btn ctrl-btn" title="上一曲">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2.2v14H6V5zm3.8 7l9.2 6.5V5.5L9.8 12z"/></svg>
+              </button>
+              <button id="btnPlay" class="mag-btn play-btn" title="播放 / 暂停 (Space)">
+                <span class="play-halo"></span>
+                <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5.2v13.6L19 12 8 5.2z"/>
+                </svg>
+              </button>
+              <button id="btnNext" class="mag-btn ctrl-btn" title="下一曲">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.8 5H18v14h-2.2V5zM5 18.5L14.2 12 5 5.5v13z"/></svg>
+              </button>
+              <button id="btnStop" class="mag-btn ctrl-btn subtle" title="停止">
+                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 2: OBS STUDIO (1:1 LIVE PREVIEW) ==================== -->
+      <section id="view-studio" class="view" data-view="studio">
+        <div class="panel-scroll">
+          <div class="panel-head">
+            <div>
+              <h2>OBS 覆盖页工坊</h2>
+              <p>所有改动毫秒级同步至 OBS 浏览器源与桌面悬浮窗</p>
+            </div>
+            <div class="head-actions">
+              <button id="btnStudioBrowser" class="glass-btn primary">浏览器预览</button>
+              <button id="btnStudioReset" class="glass-btn">恢复默认</button>
+            </div>
+          </div>
+
+          <!-- 16:9 Live Realistic OBS Viewport -->
+          <div class="preview-shell glass-card">
+            <div class="preview-toolbar">
+              <span class="preview-label">实时 16:9 画面预览</span>
+              <div class="bg-switcher">
+                <button class="bg-opt active" data-pbg="dark">暗色直播间</button>
+                <button class="bg-opt" data-pbg="light">浅色桌面</button>
+                <button class="bg-opt" data-pbg="grid">透明网格</button>
+              </div>
+            </div>
+            <div id="obsStage" class="obs-stage pbg-dark pos-bottom-left" data-obs-theme="modern">
+              <div id="obsCard" class="obs-sim-card">
+                <div id="obsSimCover" class="obs-sim-cover"><img id="obsSimCoverImg" alt=""/></div>
+                <div class="obs-sim-info">
+                  <div id="obsSimState" class="obs-sim-state">● 播放中</div>
+                  <div id="obsSimTitle" class="obs-sim-title">Midnight Prism</div>
+                  <div id="obsSimArtist" class="obs-sim-artist">AIMP Studio</div>
+                  <div id="obsSimProg" class="obs-sim-prog"><div id="obsSimFill" class="obs-sim-fill"></div></div>
+                  <div id="obsSimLyric" class="obs-sim-lyric">此刻星光穿过玻璃棱镜…</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 8 Theme Cards -->
+          <div class="glass-card section-card">
+            <div class="card-title">视觉主题</div>
+            <div id="themeGrid" class="theme-grid"></div>
+          </div>
+
+          <!-- Two Column: Position & Colors/Font -->
+          <div class="two-col">
+            <div class="glass-card section-card">
+              <div class="card-title">位置与封面布局</div>
+              <div class="pos-layout">
+                <div id="posMatrix" class="pos-matrix"></div>
+                <div class="cover-side-col">
+                  <span class="mini-label">封面方位</span>
+                  <div id="coverSideGroup" class="seg-row">
+                    <button class="seg-btn" data-side="left">左侧</button>
+                    <button class="seg-btn" data-side="right">右侧</button>
+                    <button class="seg-btn" data-side="top">顶部</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="glass-card section-card">
+              <div class="card-title">配色与歌词字体</div>
+              <div class="color-row">
+                <span class="mini-label">强调</span>
+                <div id="accentSwatches" class="swatch-list"></div>
+                <label class="color-picker-btn" title="自定义强调色">
+                  <input id="pickAccent" type="color" value="#ff9f19" />
+                  <span>取色</span>
+                </label>
+              </div>
+              <div class="color-row">
+                <span class="mini-label">背景</span>
+                <button id="btnClearBg" class="mini-pill">透明</button>
+                <label class="color-picker-btn">
+                  <input id="pickBg" type="color" value="#101218" />
+                  <span id="lblBgHex">自定义</span>
+                </label>
+                <span class="mini-label" style="margin-left:8px;">面板</span>
+                <button id="btnClearPanel" class="mini-pill">默认</button>
+                <label class="color-picker-btn">
+                  <input id="pickPanel" type="color" value="#171b24" />
+                  <span id="lblPanelHex">自定义</span>
+                </label>
+              </div>
+              <div class="color-row font-row">
+                <span class="mini-label">字体</span>
+                <button id="btnOpenFontPicker" class="font-trigger">
+                  <span id="lblCurrentFont">默认字体</span>
+                  <span class="font-arrow">选择 ▾</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dimensions & Visibility Toggles -->
+          <div class="glass-card section-card">
+            <div class="card-title">尺寸与显隐开关</div>
+            <div class="dim-grid">
+              <label class="field"><span>宽度 px</span><input id="inWidth" type="number" min="0" placeholder="默认"/></label>
+              <label class="field"><span>字号 px</span><input id="inFontsize" type="number" min="0" placeholder="默认"/></label>
+              <label class="field"><span>边距 px</span><input id="inMargin" type="number" min="0" placeholder="20"/></label>
+              <label class="field"><span>卡片圆角</span><input id="inRadius" type="number" min="0" placeholder="默认"/></label>
+              <label class="field"><span>封面圆角</span><input id="inCoverRadius" type="number" min="0" placeholder="默认"/></label>
+            </div>
+            <div id="switchGrid" class="switch-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 3: BROADCAST & EXPORT ==================== -->
+      <section id="view-broadcast" class="view" data-view="broadcast">
+        <div class="panel-scroll">
+          <div class="panel-head">
+            <div>
+              <h2>OBS 推流与导出</h2>
+              <p>复制链接填入 OBS「浏览器源」，或直接读取本地导出文件</p>
+            </div>
+          </div>
+
+          <div class="glass-card section-card highlight-card">
+            <div class="card-title">OBS 浏览器源地址</div>
+            <div class="url-bar">
+              <code id="obsUrlCode" class="url-code">http://127.0.0.1:8765/</code>
+              <button id="btnCopyObsUrl" class="glass-btn primary">复制地址</button>
+            </div>
+            <div class="url-actions">
+              <button id="btnOpenOverlay" class="glass-btn">打开覆盖页 ↗</button>
+              <button id="btnOpenGallery" class="glass-btn">主题画廊 /preview ↗</button>
+              <span class="hint-text">建议 OBS 浏览器源尺寸：460 × 240</span>
+            </div>
+          </div>
+
+          <div class="glass-card section-card">
+            <div class="card-title">本地 HTTP 服务参数</div>
+            <div class="runtime-row">
+              <label class="field"><span>监听端口</span><input id="inPort" type="number" min="1" max="65535"/></label>
+              <label class="field"><span>刷新间隔 (ms)</span><input id="inRefresh" type="number" min="100" step="50"/></label>
+              <button id="btnSaveRuntime" class="glass-btn">保存参数</button>
+              <button id="btnToggleServer" class="glass-btn primary">停止服务</button>
+            </div>
+          </div>
+
+          <div class="glass-card section-card">
+            <div class="card-title">纯文件实时导出目录</div>
+            <div class="url-bar">
+              <input id="inExportDir" class="path-input" type="text" />
+              <button id="btnChooseExport" class="glass-btn">浏览…</button>
+              <button id="btnOpenExport" class="glass-btn">打开目录</button>
+            </div>
+            <div class="file-chips">
+              <span class="file-chip">nowplaying.json</span>
+              <span class="file-chip">nowplaying.txt</span>
+              <span class="file-chip">cover.png</span>
+              <span class="file-chip">lyrics.lrc</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 4: MOBILE COMPANION & QR ==================== -->
+      <section id="view-mobile" class="view" data-view="mobile">
+        <div class="panel-scroll">
+          <div class="panel-head">
+            <div>
+              <h2>手机局域网遥控</h2>
+              <p>同一 Wi-Fi 下手机扫码直达，支持切歌、暂停与全屏歌词</p>
+            </div>
+            <label class="pill-switch">
+              <input id="chkMobileEnabled" type="checkbox" />
+              <span class="pill-slider"></span>
+              <span id="lblMobileToggle" class="pill-text">已关闭</span>
+            </label>
+          </div>
+
+          <div class="mobile-hero glass-card section-card">
+            <div class="qr-box">
+              <div id="qrContainer" class="qr-svg"></div>
+              <span class="qr-caption">手机相机扫码访问</span>
+            </div>
+            <div class="mobile-info">
+              <div class="card-title">局域网遥控地址</div>
+              <div class="url-bar">
+                <code id="mobileUrlCode" class="url-code">http://127.0.0.1:8765/m</code>
+                <button id="btnCopyMobileUrl" class="glass-btn primary">复制</button>
+              </div>
+              <p id="mobileHint" class="hint-text">开启后，新手机首次访问需在下方点击「同意」授权，保障局域网安全。</p>
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="glass-card section-card">
+              <div class="card-title">待审核设备 <span id="pendingCountTag" class="count-tag">0</span></div>
+              <div id="pendingList" class="device-list">
+                <div class="empty-tip">暂无待审核设备</div>
+              </div>
+            </div>
+            <div class="glass-card section-card">
+              <div class="card-title">已授权设备 <span id="approvedCountTag" class="count-tag">0</span></div>
+              <div id="approvedList" class="device-list">
+                <div class="empty-tip">暂无已授权设备</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Floating Dynamic Island Dock -->
+    <footer class="dock-wrap">
+      <!-- Mini Now-Playing Pill (glides in when leaving Stage view) -->
+      <div id="miniPlayer" class="mini-player" aria-hidden="true">
+        <img id="miniCover" class="mini-cover" alt="" />
+        <div class="mini-meta">
+          <div id="miniTitle" class="mini-title">未在播放</div>
+          <div id="miniArtist" class="mini-artist">AIMP</div>
+        </div>
+        <button id="miniPlayBtn" class="mini-act" title="播放 / 暂停">
+          <svg id="miniPlayIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2v13.6L19 12 8 5.2z"/></svg>
+        </button>
+        <button id="miniNextBtn" class="mini-act" title="下一曲">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.8 5H18v14h-2.2V5zM5 18.5L14.2 12 5 5.5v13z"/></svg>
+        </button>
+      </div>
+
+      <nav id="dockNav" class="dock-nav" aria-label="主导航">
+        <div id="dockIndicator" class="dock-indicator"></div>
+        <button class="dock-item active" data-target="stage" title="全息唱机舞台 (1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+            <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/>
+          </svg>
+          <span>舞台</span>
+        </button>
+        <button class="dock-item" data-target="studio" title="OBS 样式工坊 (2)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+            <circle cx="12" cy="12" r="9"/>
+            <circle cx="9" cy="10" r="1.2" fill="currentColor"/>
+            <circle cx="14.5" cy="9" r="1.2" fill="currentColor"/>
+            <circle cx="15.5" cy="14" r="1.2" fill="currentColor"/>
+            <circle cx="9.5" cy="15" r="1.2" fill="currentColor"/>
+          </svg>
+          <span>样式</span>
+        </button>
+        <button class="dock-item" data-target="broadcast" title="OBS 推流与导出 (3)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9M19.1 4.9c3.9 3.9 3.9 10.3 0 14.2M8.5 15.5a5 5 0 010-7M15.5 8.5a5 5 0 010 7"/>
+            <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+          </svg>
+          <span>直播</span>
+        </button>
+        <button class="dock-item" data-target="mobile" title="手机局域网遥控 (4)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+            <rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/>
+            <line x1="10.5" y1="18.2" x2="13.5" y2="18.2" stroke-linecap="round"/>
+          </svg>
+          <span>手机</span>
+          <span id="dockMobileBadge" class="dock-badge"></span>
+        </button>
+      </nav>
+    </footer>
+  </div>
+
+  <!-- Live Font Picker Modal -->
+  <div id="fontModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card glass-card">
+      <div class="modal-head">
+        <h3>选择歌词字体</h3>
+        <button id="btnCloseFontModal" class="win-btn close">✕</button>
+      </div>
+      <input id="fontSearch" class="path-input" type="text" placeholder="搜索本机字体名称…" />
+      <div id="fontList" class="font-list"></div>
+      <div class="modal-foot">
+        <button id="btnFontDefault" class="glass-btn">恢复默认字体</button>
+        <span id="fontPreviewSample" class="font-sample">AIMP Prism 示例歌词 123</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Elastic Toast Container -->
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+
+  <script>/*__PRISM_JS__*/</script>
+</body>
+</html>

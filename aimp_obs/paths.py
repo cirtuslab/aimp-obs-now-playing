@@ -18,3 +18,10 @@ def icon_path() -> Path:
         bundle = Path(getattr(sys, "_MEIPASS", app_root()))
         return bundle / "assets" / "icon.ico"
     return app_root() / "assets" / "icon.ico"
+
+
+def webui_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        bundle = Path(getattr(sys, "_MEIPASS", app_root()))
+        return bundle / "aimp_obs" / "webui"
+    return Path(__file__).resolve().parent / "webui"

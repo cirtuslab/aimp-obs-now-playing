@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>桌面悬浮窗</title>
+  <style>
+    :root {
+      --panel: #10131b;
+      --border: #2a2f3d;
+      --accent: #ff9f19;
+      --text: #f2f3f7;
+      --dim: #9aa2b3;
+      --bar-bg: #2b3140;
+      --scale: 1;
+      --font-scale: 1;
+      --lyric-font: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: var(--panel);
+      overflow: hidden;
+      font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    }
+
+    .outer {
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      display: flex;
+    }
+
+    .card {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: clamp(9px, calc(15px * var(--scale)), 26px) clamp(11px, calc(18px * var(--scale)), 32px) clamp(8px, calc(14px * var(--scale)), 24px);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      transition: background 240ms ease, border-color 240ms ease;
+    }
+
+    /* Section 1: Cover + Title / Artist */
+    .header-row {
+      display: flex;
+      align-items: center;
+      gap: clamp(9px, calc(14px * var(--scale)), 24px);
+      min-width: 0;
+    }
+
+    .cover-wrap {
+      width: clamp(46px, calc(90px * var(--scale)), 160px);
+      height: clamp(46px, calc(90px * var(--scale)), 160px);
+      border-radius: clamp(6px, calc(10px * var(--scale)), 18px);
+      overflow: hidden;
+      flex-shrink: 0;
+      background: rgba(128, 128, 128, 0.14);
+    }
+
+    .cover-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .meta-col {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: clamp(2px, calc(4px * var(--scale)), 8px);
+    }
+
+    .track-title {
+      font-size: clamp(15.5px, calc(21px * var(--font-scale)), 34px);
+      font-weight: 700;
+      line-height: 1.22;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .track-artist {
+      font-size: clamp(11.5px, calc(14px * var(--font-scale)), 22px);
+      font-weight: 400;
+      line-height: 1.28;
+      color: var(--dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Section 2: Full-width Progress Bar + Left/Right Times */
+    .progress-block {
+      margin-top: clamp(5px, calc(9px * var(--scale)), 16px);
+      display: flex;
+      flex-direction: column;
+      gap: clamp(2px, calc(4px * var(--scale)), 7px);
+    }
+
+    .bar-track {
+      width: 100%;
+      height: clamp(3.5px, calc(5px * var(--scale)), 8px);
+      border-radius: 999px;
+      background: var(--bar-bg);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: var(--accent);
+      transition: width 110ms linear, background 240ms ease;
+    }
+
+    .time-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: clamp(10.5px, calc(12px * var(--font-scale)), 18px);
+      color: var(--dim);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+
+    /* Section 3: Dual-line Current + Next Lyrics */
+    .lyrics-block {
+      margin-top: clamp(5px, calc(9px * var(--scale)), 16px);
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: clamp(3px, calc(5px * var(--scale)), 10px);
+      min-height: 0;
+      font-family: var(--lyric-font);
+    }
+
+    .lyric-cur {
+      font-size: clamp(14.5px, calc(18.5px * var(--font-scale)), 30px);
+      font-weight: 700;
+      line-height: 1.32;
+      color: var(--text);
+      transform-origin: left center;
+    }
+
+    .lyric-cur.anim-pop {
+      animation: lyricPop 260ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    @keyframes lyricPop {
+      0%   { opacity: 0.35; transform: translateY(7px) scale(0.95); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .lyric-next {
+      font-size: clamp(11.5px, calc(13.5px * var(--font-scale)), 22px);
+      font-weight: 400;
+      line-height: 1.32;
+      color: var(--dim);
+    }
+
+    .lyric-row {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .lock-hint {
+      position: absolute;
+      right: 12px;
+      bottom: 8px;
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--accent);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 220ms ease;
+    }
+
+    .lock-hint.show { opacity: 1; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="outer">
+    <div id="card" class="card pywebview-drag-region">
+      <!-- Top: Cover + Title/Artist -->
+      <div class="header-row">
+        <div id="coverWrap" class="cover-wrap">
+          <img id="coverImg" alt="" />
+        </div>
+        <div class="meta-col">
+          <div id="title" class="track-title">等待播放</div>
+          <div id="artist" class="track-artist">AIMP</div>
+        </div>
+      </div>
+
+      <!-- Middle: Progress bar + Times -->
+      <div id="progressBlock" class="progress-block">
+        <div class="bar-track">
+          <div id="barFill" class="bar-fill"></div>
+        </div>
+        <div class="time-row">
+          <span id="timeCur">0:00</span>
+          <span id="timeDur">0:00</span>
+        </div>
+      </div>
+
+      <!-- Bottom: Current & Next Lyrics (2 lines each for bilingual LRC) -->
+      <div id="lyricsBlock" class="lyrics-block">
+        <div id="lyricCur" class="lyric-cur">
+          <div class="lyric-row">暂无歌词</div>
+        </div>
+        <div id="lyricNext" class="lyric-next"></div>
+      </div>
+
+      <div id="lockHint" class="lock-hint"></div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const $ = (id) => document.getElementById(id);
+
+      const TK_THEMES = {
+        modern:  { panel: "#10131b", border: "#2a2f3d", accent: "#ff9f19", text: "#f2f3f7", dim: "#9aa2b3", bar_bg: "#2b3140" },
+        glass:   { panel: "#1d2634", border: "#4a5a78", accent: "#5cc8ff", text: "#ffffff", dim: "#b9c4d4", bar_bg: "#33405a" },
+        minimal: { panel: "#0c0e14", border: "#232833", accent: "#ffffff", text: "#ffffff", dim: "#a0a6b4", bar_bg: "#2a2f3a" },
+        neon:    { panel: "#12081f", border: "#ff2da0", accent: "#ff2da0", text: "#f6f2ff", dim: "#9a8fb0", bar_bg: "#3a2450" },
+        spotify: { panel: "#121212", border: "#232323", accent: "#1ed760", text: "#ffffff", dim: "#b3b3b3", bar_bg: "#333333" },
+        light:   { panel: "#fafbff", border: "#d8dce8", accent: "#2563eb", text: "#111827", dim: "#6b7280", bar_bg: "#e2e6ef" },
+        bar:     { panel: "#10131b", border: "#2a2f3d", accent: "#ff9f19", text: "#f2f3f7", dim: "#9aa2b3", bar_bg: "#2b3140" },
+        center:  { panel: "#1d2634", border: "#4a5a78", accent: "#5cc8ff", text: "#ffffff", dim: "#b9c4d4", bar_bg: "#33405a" },
+      };
+
+      let coverTs = -1;
+      let locked = false;
+      let scale = 1.0;
+      let fontAnim = true;
+      let lastCurText = "";
+      let lastNxtText = "";
+      let lockTimer = null;
+
+      function api() {
+        return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+      }
+      async function call(name, ...args) {
+        const b = api();
+        if (!b || typeof b[name] !== "function") return null;
+        try { return await b[name](...args); } catch { return null; }
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => (
+          { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+        ));
+      }
+
+      function renderMultiline(el, text) {
+        const lines = (text || "").split("\n").filter(Boolean).slice(0, 2);
+        el.innerHTML = lines.map((ln) => `<div class="lyric-row">${escapeHtml(ln)}</div>`).join("");
+      }
+
+      function applyScaleCss(s) {
+        scale = Math.max(0.55, Math.min(2.2, Number(s) || 1.0));
+        // Gentle font scaling curve so small windows keep crisp, readable typography.
+        const fontScale = scale < 1 ? (0.42 + 0.58 * scale) : scale;
+        document.documentElement.style.setProperty("--scale", scale.toFixed(3));
+        document.documentElement.style.setProperty("--font-scale", fontScale.toFixed(3));
+      }
+
+      function applyThemeColors(ov) {
+        const key = (ov && ov.theme) || "modern";
+        const base = Object.assign({}, TK_THEMES[key] || TK_THEMES.modern);
+        if (ov && ov.panel) base.panel = ov.panel;
+        if (ov && ov.accent) base.accent = ov.accent;
+        if (ov && ov.text) base.text = ov.text;
+        if (ov && ov.dim) base.dim = ov.dim;
+
+        const r = document.documentElement.style;
+        r.setProperty("--panel", base.panel);
+        r.setProperty("--border", base.border);
+        r.setProperty("--accent", base.accent);
+        r.setProperty("--text", base.text);
+        r.setProperty("--dim", base.dim);
+        r.setProperty("--bar-bg", base.bar_bg);
+        r.setProperty("--lyric-font", (ov && ov.lyric_font)
+          ? `"${ov.lyric_font}", "Segoe UI", "Microsoft YaHei UI", sans-serif`
+          : `"Segoe UI", "Microsoft YaHei UI", sans-serif`);
+      }
+
+      window.__FLOAT_SET_SCALE__ = (s) => applyScaleCss(s);
+
+      window.__FLOAT_LOCK_STATE__ = (isLocked) => {
+        locked = !!isLocked;
+        $("card").classList.toggle("pywebview-drag-region", !locked);
+        const h = $("lockHint");
+        h.textContent = locked ? "🔒 已锁定 (Ctrl+Shift+L 解锁)" : "🔓 已解锁";
+        h.classList.add("show");
+        clearTimeout(lockTimer);
+        lockTimer = setTimeout(() => h.classList.remove("show"), 1800);
+      };
+
+      async function tick() {
+        const data = await call("poll_floating", coverTs);
+        if (!data) return;
+
+        const ov = data.overlay || {};
+        applyThemeColors(ov);
+        if (typeof data.floating_lyric_font_anim === "boolean") {
+          fontAnim = data.floating_lyric_font_anim;
+        }
+        if (data.cover_data_url) {
+          coverTs = data.cover_ts;
+          $("coverImg").src = data.cover_data_url;
+        }
+
+        $("coverWrap").classList.toggle("hidden", !!ov.hide_cover);
+        $("title").classList.toggle("hidden", !!ov.hide_title);
+        $("progressBlock").classList.toggle("hidden", !!ov.hide_progress);
+        $("lyricsBlock").classList.toggle("hidden", !!ov.hide_lyrics);
+
+        const s = data.snapshot || {};
+        $("title").textContent = s.title || "未在播放";
+        const artistAlbum = [s.artist, s.album].filter(Boolean).join(" · ");
+        $("artist").textContent = artistAlbum || (s.connected ? "未知艺术家" : "未检测到 AIMP");
+        $("timeCur").textContent = s.position || "0:00";
+        $("timeDur").textContent = s.duration || "0:00";
+        const pct = Math.max(0, Math.min(100, (s.progress || 0) * 100));
+        $("barFill").style.width = pct.toFixed(2) + "%";
+
+        const cur = s.lyrics_current || (s.connected ? "（纯音乐 / 暂无歌词）" : "等待 AIMP 连接…");
+        const nxt = s.lyrics_next || "";
+        if (cur !== lastCurText || nxt !== lastNxtText) {
+          lastCurText = cur;
+          lastNxtText = nxt;
+          renderMultiline($("lyricCur"), cur);
+          renderMultiline($("lyricNext"), nxt);
+          if (fontAnim) {
+            const el = $("lyricCur");
+            el.classList.remove("anim-pop");
+            void el.offsetWidth;
+            el.classList.add("anim-pop");
+          }
+        }
+      }
+
+      function init() {
+        applyScaleCss(1.0);
+        // Right-click opens the native Win32 desktop popup menu (never clipped by window bounds).
+        document.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          call("floating_show_menu");
+        });
+
+        // Ctrl + MouseWheel scales the floating window
+        window.addEventListener("wheel", (e) => {
+          if (!e.ctrlKey || locked) return;
+          e.preventDefault();
+          const next = Math.max(0.55, Math.min(2.2, e.deltaY < 0 ? scale * 1.1 : scale / 1.1));
+          applyScaleCss(next);
+          call("floating_set_scale", next);
+        }, { passive: false });
+
+        document.addEventListener("keydown", (e) => {
+          if (e.ctrlKey && e.key.toLowerCase() === "l") {
+            e.preventDefault();
+            call("floating_toggle_lock");
+          }
+        });
+
+        tick();
+        setInterval(tick, 280);
+      }
+
+      if (api()) init();
+      else window.addEventListener("pywebviewready", init);
+    })();
+  </script>
+</body>
+</html>
