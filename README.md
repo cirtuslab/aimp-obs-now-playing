@@ -1,40 +1,63 @@
-# AIMP Now Playing → OBS
+# AIMP Prism
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078d6.svg)]()
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)]()
+[![UI: pywebview / WebView2](https://img.shields.io/badge/UI-pywebview%20%2F%20WebView2-ff9f19.svg)]()
 
-实时读取 AIMP 正在播放的歌曲信息，提供**桌面悬浮窗**与 **OBS 浏览器源**两种展示方式：封面、歌名、进度、实时歌词，支持多主题与深度自定义。
+> 原 `aimp-obs-now-playing` 全面进化版 —— 基于 **pywebview (Edge WebView2 GPU 加速)** 与 **Win32 原生能力**打造的全息黑胶音频控制台、透明置顶桌面悬浮歌词、OBS 浏览器源与局域网手机遥控套件。
 
-## 功能特性
+实时读取 AIMP 正在播放的歌曲信息，提供**全息黑胶控制台**、**桌面悬浮窗**、**OBS 浏览器源**与**局域网手机遥控**四种联动体验：封面、歌名、进度、逐字/双语歌词，支持深度视觉自定义。
 
-- 🎵 实时获取 AIMP 播放状态、曲目信息、封面与进度（使用官方 Remote API，无需插件，支持点击/拖拽进度条跳转）
-- 🎨 紧凑现代化双主题界面：支持深色 / 亮色一键切换（带圆形涟漪过渡与 Windows 原生标题栏深浅色同步）、顶部悬浮胶囊导航、60+ FPS 原生 GDI 滑入淡入切页、封面呼吸光晕、7 柱峰值保持频谱与流光进度条
-- 🖥 桌面悬浮窗：无边框置顶、半透明、等比缩放、跨显示器拖动、全局快捷键锁定、开关淡入淡出动效，**不占用任务栏图标**
-- 📺 OBS 浏览器源：8 套主题、九宫格定位、实时 16:9 微缩预览、自定义颜色/字体/控件显隐，改样式实时同步
-- 📝 歌词：同步 LRC 逐行高亮，中日翻译双行显示，平滑滚动切换，支持本机字体搜索选择
-- 💾 设置自动保存（含深/亮外观模式），重启不丢失
-- 🎭 演示模式：顶部一键开启，让 GUI、悬浮窗与 OBS 覆盖页全部显示示例数据
-- 🔔 最小化到托盘：点最小化收进右下角通知区，不占任务栏（悬浮窗保持正常显示且不留任务栏图标），单击恢复、右键可退出
-- 📦 单文件 exe 发布，无需安装 Python
+## ✨ v2.0 核心特性
 
-## 截图
+- 💿 **全息黑胶舞台（Holographic Vinyl Deck）**：
+  - 无边框 Windows 11 原生圆角玻璃窗口 + 全画幅动态封面极光背景（实时提取专辑封面三色驱动氛围光球与鼠标聚光灯）
+  - 3D 交互式专辑封套（鼠标悬停 3D 视差倾斜 + 全息扫光）、播放自动滑出的旋转黑胶碟片与联动金属唱臂
+  - Canvas GPU 60/120FPS 64 频段双色流光环形频谱 + 飘散星尘粒子
+  - 磁吸跟随播放控制键 + 点击粒子爆发反馈 + 液态流光进度条（支持拖拽/点击精准 Seek 跳转 AIMP 播放位置）
+- 🌗 **GPU 圆形光波切主题**：点击右上角光球（或按 `T`）通过原生 View Transitions API 径向光波扩散切换 **暗夜黑胶 / 极光白瓷**，同步 DWM 窗口边框色
+- 🏝 **底部悬浮灵动岛 Dock**：弹簧高亮滑块丝滑切换「舞台 / 样式 / 直播 / 手机」四大工作区，切离舞台时自动滑出迷你旋转黑胶播放胶囊
+- 🖥 **零 Tk 桌面悬浮窗**：
+  - 同样由 `pywebview` 独立窗口驱动（全运行态零 `tkinter`/`tcl86t.dll`），经典三段式排版（封面+歌名 / 进度条+时间 / 双行原词+翻译歌词）
+  - Win11 原生 DWM 圆角 + 系统级 `WS_EX_LAYERED` 真桌面透视半透明（50%–100% 实时可调）
+  - 原生 Win32 桌面右键级联菜单（缩小窗口也永不裁切）、`Ctrl + 滚轮` 非线性保底缩放、`Ctrl + Shift + L` 全局锁定拖动，**不占用任务栏图标**
+- 📺 **OBS 样式工坊**：1:1 实时 16:9 画面预览（暗色直播间 / 浅色桌面 / 透明网格三背景）、8 套主题、九宫格定位、本机字体即时搜索与真机预览、改动毫秒级同步 OBS
+- 📱 **手机局域网遥控**：内置零依赖纯前端 SVG 实时二维码，手机扫码直达 `/m`，支持设备审批与红点角标提示
+- 🔔 **极低占用托盘休眠**：最小化收进右下角托盘后自动暂停前端动画与轮询，后台占用趋近于零，悬浮窗与 OBS 服务继续不间断运行
+- 📦 **单文件 exe 发布**：无需安装 Python，双击即用
 
-![主界面（深色模式）](screenshot-gui.png)
+## 📸 界面预览
 
-![主界面（亮色模式）](screenshot-gui-light.png)
+![主界面 · 暗夜黑胶](screenshot-gui.png)
 
-![覆盖页样式与实时预览](screenshot-settings.png)
+![主界面 · 极光白瓷](screenshot-gui-light.png)
+
+![OBS 覆盖页工坊与 1:1 实时预览](screenshot-settings.png)
+
+![手机局域网扫码遥控](screenshot-mobile.png)
 
 ![桌面悬浮窗](screenshot-floating.png)
 
 ![OBS 覆盖页](screenshot-overlay.png)
 
-## 快速开始
+## ⌨️ 快捷键
+
+| 快捷键 | 功能 |
+| --- | --- |
+| `Space` | 播放 / 暂停 |
+| `1` / `2` / `3` / `4` | 切换 舞台 / 样式 / 直播 / 手机 |
+| `D` | 开关演示模式 |
+| `F` | 开关桌面悬浮窗 |
+| `T` | 圆形光波切换暗色 / 亮色主题 |
+| `Ctrl + Shift + L` | 全局锁定 / 解锁桌面悬浮窗拖动 |
+| `Ctrl + 滚轮` | 悬浮窗内等比缩放（55% – 220%） |
+
+## 🚀 快速开始
 
 ### 直接使用 exe
 
-从 Releases 下载 `AIMPNowPlaying.exe`，双击运行即可。首次启动需要几秒解压内置运行时。
+从 [Releases](https://github.com/cirtuslab/aimp-prism/releases) 下载 `AIMPNowPlaying.exe`，双击运行即可（Windows 10/11 已内置 Edge WebView2 运行时）。
 
 ### 从源码运行
 
@@ -51,13 +74,13 @@ python main.py
 python main.py --headless
 ```
 
-## OBS 集成
+## 📺 OBS 集成
 
 1. OBS 中添加“浏览器（Browser）”源
 2. URL 填 `http://127.0.0.1:8765/`
 3. 宽度建议 `460`，高度 `240`，按需调整
 
-浏览器打开 `http://127.0.0.1:8765/preview` 可并排预览全部主题（模拟数据）。
+浏览器打开 `http://127.0.0.1:8765/preview` 可并排预览全部 8 套主题。
 
 ### 主题
 
@@ -72,7 +95,7 @@ python main.py --headless
 | `bar` | 横向紧凑条（16:9 底部） |
 | `center` | 竖屏居中（9:16） |
 
-### 常用参数
+### 常用 URL 参数
 
 ```text
 http://127.0.0.1:8765/?theme=neon&pos=bottom-right&width=460
@@ -92,58 +115,36 @@ http://127.0.0.1:8765/?theme=neon&pos=bottom-right&width=460
 | `hide` | 停止播放时隐藏面板（`stopped`） |
 | `demo` | 模拟数据预览（`1`） |
 
-## 手机查看
+## 📱 手机局域网遥控
 
-同一 Wi-Fi 下，用 iPhone Safari 打开：
+在底部 Dock 切换到「手机」页开启局域网连接后，直接用手机相机扫描屏幕上的实时二维码，或打开：
 
 ```text
 http://电脑IP:8765/m
 ```
 
-（`/mobile` 为同义路径。）页面竖屏/横屏自适应，显示封面、歌名、进度与歌词（支持 Enhanced LRC 逐字加粗），带与浏览器源一致的**歌词滚动动画**与**平滑进度条**，每 1.2 秒自动刷新。
+- 支持竖屏/横屏自适应、Enhanced LRC 逐字高亮、播放控制与 7 套移动端主题
+- iOS Safari 可通过「分享 → 添加到主屏幕」独立全屏使用（内置 PWA manifest 与图标）
+- **设备认证（默认关闭）**：新手机首次访问会出现在「待审核设备」（Dock 亮起红点角标），需在电脑端点击「同意」才下发授权 token；`/api/config` 写入始终仅限本机
 
-**全屏使用**：iOS 不允许网页隐藏 Safari 地址栏；点击“分享 → 添加到主屏幕”后，从主屏幕图标打开即为独立全屏（已内置 PWA manifest 与图标）。页面使用动态视口高度（`100dvh`）自动填满屏幕。
+## 🖥 桌面悬浮窗
 
-**界面主题**：左下角 ◐ 按钮可切换主题，选择会记在本机。内含 Modern / Glass / Neon / Spotify / Light / Vinyl（黑胶暖调）/ Bloom（封面虚化沉浸）共 7 套；也可用 `http://电脑IP:8765/m?theme=vinyl` 直接指定。电脑端覆盖页的强调色仍可轻微染色手机界面。
+点击顶栏「悬浮窗」（或按 `F`）打开，采用独立 `pywebview` 透明置顶窗口 + Win32 `WS_EX_TOOLWINDOW`（不占任务栏图标）+ `WS_EX_LAYERED`（真桌面透视半透明）：
 
-**播放控制**：角落里的半透明 ⏯ 小按钮可展开播放控制（上一首 / 播放暂停 / 停止 / 下一首）。
+- **拖动**：按住窗口任意位置自由拖动，支持跨显示器
+- **缩放**：`Ctrl + 鼠标滚轮` 缩放（55% ~ 220%），小尺寸自动启用字号保底避免文字过小
+- **锁定**：全局快捷键 `Ctrl + Shift + L` 锁定/解锁拖动
+- **原生右键菜单**：播控、8 款主题、透明度（50%–100%）、缩放、歌词字号动画、锁定与关闭，独立浮于桌面永不裁切
 
-**设备认证（默认关闭）**：
+## 🔔 最小化到托盘
 
-- 手机连接默认关闭，只有在 GUI 顶部「手机」标签页中启用后，设备才能连接
-- 首次连接会出现在“待审核设备”中（顶部「手机」标签会亮起红点角标），点击“同意”后手机才能读取信息与发送播放控制；也可“拒绝”或稍后“移除”
-- 从旧版本升级后，原先已授权的手机需要在电脑端**重新点一次“同意”**（设备密钥迁移会重置授权状态）
-- `--headless` 模式下手机连接强制关闭
+点击右上角最小化按钮，主窗口隐藏至右下角系统托盘并暂停前端渲染以节省资源：
 
-启动（局域网模式）：
+- 单击或双击托盘图标：瞬时恢复主窗口
+- 右键托盘图标：显示主窗口 / 退出
+- 托盘常驻期间，OBS 浏览器源、手机遥控、桌面悬浮窗与文件导出全部照常运行
 
-```powershell
-python main.py --host 0.0.0.0
-```
-
-> 安全：手机页面支持播放控制；`/api/config` 的写入仅允许本机（127.0.0.1），局域网设备无法修改样式。手机端读取状态/封面/歌词/控制均需已授权设备 token；token 由设备密钥（secret）换取，仅知道设备 ID 无法取回 token。关闭手机连接后服务会重新绑定回 `127.0.0.1`。
-
-## 桌面悬浮窗
-
-点击主界面右上角「悬浮窗」按钮打开，支持开关淡入淡出动效，且通过 `WS_EX_TOOLWINDOW` 保持不占用任务栏图标。
-
-- 拖动：按住窗口任意位置拖动，支持跨显示器
-- 缩放：`Ctrl + 鼠标滚轮` 等比缩放（40% ~ 250%）
-- 锁定/解锁拖动：全局快捷键 `Ctrl + Shift + L`，切换时右下角短暂显示 🔒/🔓
-- 右键菜单：播放控制（播放/暂停、上一首、下一首、停止）、外观（主题/透明度/缩放/歌词字号动画）、交互（锁定）、关闭
-
-## 最小化到托盘
-
-点主界面的最小化按钮后，程序不会留在任务栏，而是收进右下角通知区：
-
-- 单击或双击托盘图标：平滑淡入恢复主窗口
-- 右键托盘图标：菜单（显示主窗口 / 退出）
-- 首次最小化会弹一个**静音**提示气泡（`NIIF_NOSOUND`，不播放提示音）
-- 收进托盘期间程序照常运行：OBS 浏览器源、手机页面、桌面悬浮窗（保持置顶且不留任务栏图标）、导出文件都不中断
-
-> Windows 11 默认把新出现的托盘图标收进通知区的折叠面板（`^`）；想让它常驻，可在「设置 → 个性化 → 任务栏 → 其他系统托盘图标」里打开。任务栏管理器重启（资源管理器崩溃恢复）后图标会自动重新注册。
-
-## 配置
+## ⚙️ 配置与导出
 
 ### 命令行参数
 
@@ -156,20 +157,12 @@ python main.py --host 0.0.0.0
 --version            显示版本号
 ```
 
-### 设置保存
+### 设置保存与导出文件
 
-所有设置自动保存到 `%APPDATA%\AIMP-OBS-NowPlaying\settings.json`，命令行参数优先于已保存设置；可用环境变量 `AIMP_SETTINGS_PATH` 指定自定义位置。
+- 设置自动保存到 `%APPDATA%\AIMP-OBS-NowPlaying\settings.json`（可用 `AIMP_SETTINGS_PATH` 覆盖）
+- 运行时实时导出至 `export/`：`nowplaying.json`、`nowplaying.txt`、`cover.png`、`lyrics.lrc`
 
-### 导出文件
-
-运行时会更新 `export/` 目录（默认在程序所在目录）：
-
-- `nowplaying.json` — 完整 JSON 状态
-- `nowplaying.txt` — 简单文本（标题/歌手/时间）
-- `cover.png` — 当前封面
-- `lyrics.lrc` — 当前歌词
-
-## 从源码构建与测试
+## 🛠 从源码构建与测试
 
 ```powershell
 python -m pip install -r requirements-dev.txt
@@ -177,84 +170,49 @@ python -m pytest
 .\build_exe.ps1
 ```
 
-GitHub Actions 会在 Windows 上自动执行测试并构建 exe。
+GitHub Actions 会在 Windows 上自动执行全部单元测试并打包单文件 exe。
 
-## 技术栈
+## 🧱 技术栈与项目结构
 
-- Python 3.10+，`ctypes` 直接调用 Win32 API
+- Python 3.10+，`ctypes` 直接调用 Win32 / DWM / GDI API
+- [pywebview](https://github.com/r0x0r/pywebview)（Windows Edge WebView2 GPU 硬件加速）
 - AIMP Remote API（窗口消息 + 共享内存 + `WM_COPYDATA` 封面）
-- CustomTkinter（主界面）、Tkinter Canvas（悬浮窗）
-- Pillow（图片处理）、tinytag（音频标签/内嵌封面歌词）
-- PyInstaller（单文件打包）
-
-## 项目结构
+- Pillow（封面处理与主色调提取）、tinytag（音频标签/内嵌封面歌词）
+- PyInstaller（单文件 exe 打包）
 
 ```text
-AIMP-OBS-NowPlaying/
-├── main.py                 入口（GUI / --headless）
+aimp-prism/
+├── main.py                     入口（GUI / --headless）
 ├── aimp_obs/
-│   ├── aimp_api.py         AIMP Remote API 封装
-│   ├── lyrics.py           LRC/内嵌歌词解析
-│   ├── cover.py            封面提取与缓存
-│   ├── state.py            状态汇总与导出
-│   ├── overlay.py          OBS 覆盖页（HTML/CSS/JS）
-│   ├── mobile.py           手机端页面与 PWA 清单
-│   ├── devices.py          局域网设备审批与 token 管理
-│   ├── server.py           本地 HTTP 服务
-│   ├── theme.py            深/亮主题色板、矢量图标与 Win32 GDI 合成工具
-│   ├── widgets.py          自定义动画组件（过渡幕布、频谱、进度条、歌词、预览等）
-│   ├── gui.py              CustomTkinter 紧凑主界面
-│   ├── floating.py         桌面悬浮窗
-│   ├── tray.py             系统托盘图标（Win32 Shell_NotifyIconW）
-│   ├── demo.py             演示模式模拟数据
-│   ├── settings.py         设置持久化
-│   └── paths.py            源码/exe 路径工具
-├── tests/                  单元测试
-├── assets/                 应用图标
-├── .github/workflows/      CI 构建
+│   ├── aimp_api.py             AIMP Remote API 封装
+│   ├── lyrics.py               LRC / Enhanced LRC / 内嵌歌词解析
+│   ├── cover.py                封面提取与缓存
+│   ├── state.py                状态汇总与导出
+│   ├── overlay.py              OBS 覆盖页（HTML/CSS/JS）
+│   ├── mobile.py               手机端页面与 PWA 清单
+│   ├── devices.py              局域网设备审批与 token 管理
+│   ├── server.py               本地 HTTP 服务
+│   ├── theme.py                主题色板、封面取色、DWM 圆角与 Win32 GDI 字体枚举
+│   ├── gui.py                  pywebview 主界面与 JS Bridge API
+│   ├── floating_host.py        pywebview 桌面悬浮窗宿主（原生右键菜单/热键/透明）
+│   ├── webui/                  AIMP Prism Deck 自包含前端（index/style/app/floating）
+│   ├── tray.py                 系统托盘图标（Win32 Shell_NotifyIconW）
+│   ├── demo.py                 演示模式模拟数据
+│   ├── settings.py             设置持久化
+│   └── paths.py                源码 / exe 路径工具
+├── tests/                      单元测试
+├── assets/                     应用图标
+├── .github/workflows/          CI 构建
 └── LICENSE
 ```
 
-## 常见问题
-
-**提示“未检测到 AIMP”**：请先启动 AIMP；AIMP 重启后程序会自动重连。
-
-**歌词不显示**：确认歌曲同目录存在同名 `.lrc`（例如 `歌手 - 歌名.lrc`），或音频内嵌歌词。
-
-**端口被占用**：在设置中更换端口，或使用 `--port` 指定。
-
-**封面不显示**：优先使用 AIMP 返回的封面，其次读取音频标签/同目录 `cover.jpg`、`folder.jpg`。
-
-## 隐私
-
-- 所有数据仅在本机处理，不会上传歌曲、歌词或封面
-- 服务默认只监听 `127.0.0.1`；使用 `--host 0.0.0.0` 或启用手机连接时暴露到局域网，同一网络内设备需经审批并携带 token 才能读取状态/发送控制，覆盖页样式写入始终仅限本机
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request：
-
-- 报告问题前请提供 AIMP 版本、Python 版本、复现步骤
-- 代码风格跟随现有项目，提交前请运行 `python -m pytest`
-- 重大变更请先开 Issue 讨论
-
-## 许可证
+## 📄 许可证
 
 本项目采用 **MIT**（见 [LICENSE](LICENSE)）。
 
 主要依赖许可证：
 
+- pywebview：BSD-3-Clause
 - tinytag：MIT
 - Pillow：HPND
-- CustomTkinter：MIT
 - PyInstaller：GPL-2.0-or-later（含分发例外）
-
-> `assets/icon.ico` 为项目作者提供的 logo，随项目以 MIT 许可发布。
-
-## 致谢
-
-- [AIMP](https://www.aimp.ru/) 及其官方 Remote API / SDK
-- [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
-- [Pillow](https://python-pillow.org/)
-- [tinytag](https://github.com/tinytag/tinytag)
-- [PyInstaller](https://pyinstaller.org/)

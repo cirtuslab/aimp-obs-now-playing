@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('assets/icon.ico', 'assets')]
+datas = [
+    ('assets/icon.ico', 'assets'),
+    ('aimp_obs/webui', 'aimp_obs/webui'),
+]
 binaries = []
 hiddenimports = []
-tmp_ret = collect_all('customtkinter')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+for pkg in ('webview', 'pythonnet', 'clr_loader', 'customtkinter'):
+    tmp_ret = collect_all(pkg)
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
